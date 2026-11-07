@@ -1,0 +1,4647 @@
+--[[
+	FLAMETHROWER  |  Created by DuaKNo & Monkey      (LocalScript, no server script needed)
+
+	SETUP
+	1. Toolbox -> Inventory/Models -> add the flamethrower (asset 8083772765) to the game.
+	   Put the Tool in StarterPack. Roblox then clones it into every player's Backpack.
+	2. Put THIS script in StarterPlayer > StarterPlayerScripts as a LocalScript.
+	That's all. It finds the tool by name ("flame"), so keep "Flamethrower" in its name.
+
+	If the model has its own Scripts / LocalScripts inside, delete them. This script
+	handles flames, fuel, burning and blood itself and they would fight each other.
+
+	Held:    the tool's own Handle/Grip is used, so the avatar holds it normally.
+	Tank:    a banded back tank + hose is added to your avatar (needed for the fuel nozzle; the lite version
+	         has the tank and hose too, just no fuel).
+	Burning: skin goes red, scorched, then charred. NPCs bleed and the blood dries.
+	Fuel:    hold the prompt at the pump, the nozzle hooks onto your tank, then CLICK the
+	         nozzle (or the PUMP button) over and over to fill the tank.
+	Menu:    only shows while the flamethrower is equipped. Drag it by the title bar, resize it from the
+	         bottom-right corner, minimize it to a small square with the _ button or the M key.
+	Version: a small draggable card asks which version to run before anything loads (the game behind it
+	         stays clickable). Full version = all features.
+	         Flamethrower only = flamethrower, shoulder hold, NPC burning and death. Plus ground fire, black marks,
+	         napalm, blue flames, fire spread and the back tank + hose. No fuel, heat, begging or blood.
+	Sounds:  upload the files from Flamethrower_Sounds.zip (Creator Hub -> Audio), then paste the
+	         asset IDs into CFG.SOUNDS (a plain number works). README.txt in the zip lists which is which.
+	Hold:    shoulder stance. The gun is held out from your right shoulder in a fixed pose that does not
+	         shake with walking, and only tips up/down with where you aim. Shift lock turns on by itself
+	         while the flamethrower is equipped (Shift toggles it).
+	Cursor:  a crosshair shows in the middle of the screen while shift lock is on.
+	Flames:  menu toggles: blue flames, fire spread (burning NPCs / ground fire ignite whatever is close) and
+	         napalm (full version: sticky fire that stays on the ground and sets NPCs on fire when they walk in it).
+	         Fire never just switches off, it dies down slowly (CFG.FADE_TIME).
+	Re-run:  executing the script again first removes the previous copy (its menus, HUDs, rig and NPCs).
+	Kills:   NPCs die for real: the script claims network ownership of the NPC and sets Humanoid.Health to 0
+	         (same method as the car spawner). Ownership only works while the flamethrower is equipped.
+	Chat:    NPC lines use Roblox's own bubble chat.
+	No store tool found -> a built-in wand is built instead (CFG.FALLBACK_BUILTIN).
+]]
+
+local RunService = game:GetService("RunService")
+if RunService:IsServer() then
+	warn("[Flamethrower] This must be a LocalScript (StarterPlayerScripts), not a Script in ServerScriptService.")
+	return
+end
+
+------------------------------------------------------------------ CLIENT PART
+local Players = game:GetService("Players")
+local StarterGui = game:GetService("StarterGui")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local Debris = game:GetService("Debris")
+
+local player = Players.LocalPlayer
+
+------------------------------------------------------------------ CONFIG
+local CFG = {
+	TOOL_KEYWORD = "flame",
+	FALLBACK_BUILTIN = true,    -- build the wand ourselves if the store tool isn't in StarterPack
+	BACK_TANK = true,           -- add the back tank + hose to the avatar when using the store tool
+	BLOOD = true,               -- also a toggle in the menu
+	TWO_HANDS = true,           -- left hand grabs the front of the store model too
+	AUTO_SHIFTLOCK = true,      -- shift lock switches on while the flamethrower is equipped
+	HOLD_AT_SHOULDER = true,    -- store model: arm out from the shoulder, steady (false = Roblox default hold)
+	MUZZLE_NAME = "",           -- optional: exact name of the part/attachment at the tip of the store model
+	RANGE = 30,                 -- studs
+	BLUE_FLAME = false,         -- blue flames (also a toggle in the menu)
+	NAPALM = false,             -- sticky ground fire that burns a long time (full version only, toggle in the menu)
+	SPREAD = true,              -- fire jumps to NPCs standing close to burning NPCs / burning ground
+	SPREAD_RADIUS = 6,          -- studs, NPC to NPC
+	FADE_TIME = 3.5,            -- seconds the fire on an NPC takes to die down after the last hit
+	NAPALM_LIFE = 18,           -- seconds a napalm patch burns (it dies down slowly at the end)
+	CONE_ANGLE = 18,            -- degrees
+	TICK = 0.07,                -- seconds between flame checks
+
+	BURN_DPS = 8.5,             -- health per second while burning (100 hp = ~12s). Lower = slower death
+	BURN_TIME = 4,              -- fire keeps going this long after the last hit
+	PANIC_SPEED = 20,
+	RAGDOLL_DELAY = 2.6,        -- panic running before the NPC drops
+	RECOVER_DELAY = 2,          -- if the fire goes out and it survived, it gets back up after this
+
+	FUEL_MAX = 100,
+	FUEL_DRAIN = 6,             -- per second of firing (about 16s of continuous fire)
+	FUEL_LOW = 25,
+	PUMP_PER_CLICK = 6,         -- fuel added per click on the nozzle (about 17 clicks from empty)
+	STATION_LEAVE_DIST = 14,    -- walk further than this from the pump and the nozzle pops off
+	TANK_LITRES = 20,
+
+	-- how the gun sits in your hands (x / y / z offsets, pitch / yaw / roll in degrees)
+	GUN_FIT = { x = 0, y = 0, z = 0, pitch = 0, yaw = 0, roll = 0 },
+
+	SCREAM_LINES = { "AAAAAH!", "IT BURNS!", "HELP ME!", "PLEASE!!", "SOMEBODY HELP!", "I CAN'T- AAAH!" },
+
+	-- the begging scene: point the gun at an NPC and he drops to his knees and begs, with a movie look
+	BEG = {
+		ENABLED = true,
+		ANIM = "",                  -- optional emote id. Leave empty to use the built-in kneel + begging animation (Roblox only plays emotes your game owns)
+		AIM_TIME = 0.35,            -- seconds you must keep the crosshair on him before he starts begging
+		RANGE = 35,                 -- studs
+		MERCY_TIME = 1.1,           -- look away this long and he gets up and runs off
+		KNEEL = false,              -- true = he drops to his knees while praying; false = stays standing like your emote video
+		CINEMATIC = false,          -- dark movie look (black bars, grade, vignette, zoom, subtitles) while you aim at him. OFF by default, switch it on in the menu
+		-- ENABLED = false turns the whole begging scene off (also in the menu)
+		LINES = {
+			"Please... please don't do this.", "I have a family!", "I'll do anything... anything!",
+			"Don't... I'm begging you!", "Please, no. No, no, no...", "I didn't do anything!",
+		},
+		SPARED_LINES = { "Thank you... thank you!", "I won't forget this!", "Oh god... thank you!" },
+	},
+
+	-- overheating: fire non-stop this long and the flamethrower blows up (and you with it)
+	HEAT = {
+		ENABLED = true,
+		TIME = 8,                   -- seconds of continuous fire until it explodes
+		COOL = 0.18,                -- how fast it cools while you're not firing (fraction per second)
+		WARN = 0.65,                -- the "HEAT! HEAT!" warning starts here
+	},
+
+	MAX_NPCS = 15,
+	CORPSE_TIME = 12,           -- seconds a dead NPC stays before it fades away (0 = never)
+	DISCORD = "https://discord.gg/empgqd5qpq",
+
+	SOUNDS = {
+		-- paste rbxassetid://NUMBER for each. Empty = silent. Your audio must be public or owned by you/your group.
+		FLAME_LOOP = "129504465599355",   -- looping flame roar while firing (swap with FLAME_START if they sound the wrong way round)
+		FLAME_START = "9065033389",       -- the "fwoomp" when you start firing
+		EXPLODE = "",              -- optional: your own explosion sound (a built-in one is used if empty)
+		HEAT_WARN = "",            -- optional: warning beep when the heat gets high
+		BEG_TENSION = "",          -- optional: tense drone/heartbeat that loops during the begging scene
+		SCREAM = { "", "", "", "" },   -- scream_1..4.ogg, they loop while an NPC burns
+		DEATH = "",                -- death.ogg
+		SPAWN = "",                -- spawn.ogg
+		IGNITE = "",               -- ignite.ogg       an NPC catches fire
+		EMPTY = "",                -- empty.ogg        trigger click with no fuel
+		CONNECT = "",              -- connect.ogg      nozzle clicks onto the tank
+		FUEL_LOOP = "",            -- fuel_loop.ogg    while filling
+		REFILL = "",               -- refill.ogg       tank full
+		PUMP_CLICK = "",           -- pump_click.ogg   each click on the nozzle
+	},
+}
+
+------------------------------------------------------------------ RE-EXECUTE: REMOVE THE PREVIOUS COPY
+-- Running the script again first stops the old copy: connections, render steps, menus, HUDs, rig, NPCs and effects.
+-- (no new top-level locals here: Luau caps them at 200, so the state lives in CFG.FT)
+do
+	local env = (typeof(getgenv) == "function" and getgenv()) or _G
+	local Lighting = game:GetService("Lighting")
+	local FT = { stopped = false, conns = {}, bound = {}, cleanups = {} }
+
+	local function wipe()
+		local hosts = { player:FindFirstChildOfClass("PlayerGui") }
+		pcall(function()
+			if typeof(gethui) == "function" then table.insert(hosts, gethui()) end
+		end)
+		for _, host in ipairs(hosts) do
+			for _, g in ipairs(host:GetChildren()) do
+				if g:IsA("ScreenGui") and (string.find(g.Name, "^Flamethrower") or g.Name == "BegCinema") then
+					g:Destroy()
+				end
+			end
+		end
+		for _, n in ipairs({ "BegGrade", "BegFocus" }) do
+			local e = Lighting:FindFirstChild(n)
+			if e then e:Destroy() end
+		end
+		local ch = player.Character
+		if ch then
+			for _, d in ipairs(ch:GetDescendants()) do
+				if d.Name == "FlamethrowerRig" then d:Destroy() end
+			end
+			local hum = ch:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum.AutoRotate = true
+				hum.CameraOffset = Vector3.zero
+			end
+		end
+		for _, d in ipairs(Workspace:GetChildren()) do
+			if d.Name == "FlamethrowerFX" or d.Name == "FlamethrowerRig" or d:GetAttribute("FlamethrowerStation") then
+				d:Destroy()
+			end
+		end
+		-- the built-in wand is built together with its rig, so it is removed too and the new copy builds both again
+		-- (otherwise the old tool is left without a gun)
+		for _, container in ipairs({ player:FindFirstChildOfClass("Backpack"), ch }) do
+			if container then
+				for _, t in ipairs(container:GetChildren()) do
+					if t:IsA("Tool") and (t:GetAttribute("FlamethrowerBuiltin")
+						or (t.RequiresHandle == false and string.find(string.lower(t.Name), "flame") and not t:FindFirstChildWhichIsA("BasePart", true))) then
+						t:Destroy()
+					end
+				end
+			end
+		end
+		pcall(function() UserInputService.MouseBehavior = Enum.MouseBehavior.Default end)
+	end
+
+	-- wraps a service so every signal connection and render step made through it can be undone later
+	local function track(svc)
+		return setmetatable({}, {
+			__index = function(_, k)
+				local v = svc[k]
+				if typeof(v) == "RBXScriptSignal" then
+					return {
+						Connect = function(_, fn)
+							local c = v:Connect(fn)
+							table.insert(FT.conns, c)
+							return c
+						end,
+						Once = function(_, fn)
+							local c = v:Once(fn)
+							table.insert(FT.conns, c)
+							return c
+						end,
+						Wait = function() return v:Wait() end,
+					}
+				elseif type(v) == "function" then
+					if k == "BindToRenderStep" then
+						return function(_, name, ...)
+							table.insert(FT.bound, name)
+							return v(svc, name, ...)
+						end
+					end
+					return function(_, ...) return v(svc, ...) end
+				end
+				return v
+			end,
+			__newindex = function(_, k, val) svc[k] = val end,
+		})
+	end
+
+	local prev = env.__FlamethrowerStop
+	if type(prev) == "function" then pcall(prev) end
+	wipe()
+
+	env.__FlamethrowerStop = function()
+		FT.stopped = true
+		for _, c in ipairs(FT.conns) do pcall(function() c:Disconnect() end) end
+		for _, n in ipairs(FT.bound) do pcall(function() RunService:UnbindFromRenderStep(n) end) end
+		for _, f in ipairs(FT.cleanups) do pcall(f) end
+		wipe()
+	end
+
+	RunService = track(RunService)
+	UserInputService = track(UserInputService)
+	CFG.FT = FT
+end
+
+------------------------------------------------------------------ FLAME COLOURS
+do
+	local C = Color3.fromRGB
+	CFG.PAL = {
+		orange = {
+			core = { C(255, 250, 215), C(255, 200, 80), C(255, 120, 30) },
+			body = { C(255, 190, 70), C(240, 90, 15), C(70, 22, 10) },
+			drop = { C(255, 190, 80), C(255, 90, 20) },
+			npc = { C(255, 215, 110), C(255, 110, 20), C(90, 25, 10) },
+			ground = { C(255, 190, 70), C(230, 60, 10) },
+			light = C(255, 140, 50),
+		},
+		blue = {
+			core = { C(225, 245, 255), C(120, 195, 255), C(50, 110, 255) },
+			body = { C(130, 200, 255), C(30, 100, 255), C(10, 20, 80) },
+			drop = { C(150, 210, 255), C(40, 110, 255) },
+			npc = { C(190, 230, 255), C(50, 130, 255), C(15, 30, 90) },
+			ground = { C(130, 200, 255), C(30, 90, 255) },
+			light = C(70, 140, 255),
+		},
+	}
+	function CFG.pal() return CFG.BLUE_FLAME and CFG.PAL.blue or CFG.PAL.orange end
+	function CFG.seq3(t)
+		return ColorSequence.new({
+			ColorSequenceKeypoint.new(0, t[1]), ColorSequenceKeypoint.new(0.5, t[2]), ColorSequenceKeypoint.new(1, t[3]),
+		})
+	end
+	CFG.lastDrop = 0
+	CFG.animActive = setmetatable({}, { __mode = "k" })   -- NPCs currently driven by your own animations
+	CFG.igniteFn = function() end   -- assigned once ignite() exists
+end
+
+------------------------------------------------------------------ STARTUP NOTIFICATIONS (Roblox's own notification popups)
+-- Two popups the moment the script runs. SetCore only works once Roblox's CoreScripts are ready, so it keeps retrying.
+do
+	local function toast(data)
+		for _ = 1, 40 do
+			if CFG.FT.stopped then return end
+			if pcall(function() StarterGui:SetCore("SendNotification", data) end) then return end
+			task.wait(0.5)
+		end
+	end
+	task.spawn(function()
+		toast({ Title = "Flamethrower", Text = "By DuaKNo & Monkey", Duration = 4 })
+		task.wait(0.8)
+		local copy = Instance.new("BindableFunction")
+		copy.OnInvoke = function()
+			if typeof(setclipboard) == "function" then pcall(setclipboard, CFG.DISCORD) end
+		end
+		toast({
+			Title = "Join Discord server for more",
+			Text = "discord.gg/empgqd5qpq",
+			Duration = 4,
+			Button1 = "Copy",
+			Callback = copy,
+		})
+	end)
+end
+
+------------------------------------------------------------------ VERSION POPUP
+-- A small floating card. There is NO full-screen overlay, so the game behind it stays clickable
+-- (the old one covered the whole screen and swallowed every click). Drag the header to move it.
+do
+	local TweenService = game:GetService("TweenService")
+	local chosen
+	local picked = Instance.new("BindableEvent")
+	local host = player:WaitForChild("PlayerGui")
+	pcall(function()
+		if typeof(gethui) == "function" then host = gethui() end
+	end)
+
+	local ORANGE = Color3.fromRGB(255, 150, 50)
+	local GREEN = Color3.fromRGB(110, 205, 130)
+	local WHITE = Color3.fromRGB(240, 240, 242)
+	local MUTED = Color3.fromRGB(150, 150, 160)
+	local CARD_H = 374
+
+	local function make(class, props, parent)
+		local i = Instance.new(class)
+		for k, v in pairs(props) do i[k] = v end
+		i.Parent = parent
+		return i
+	end
+
+	local g = make("ScreenGui", {
+		Name = "FlamethrowerVersion", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 1000,
+	}, host)
+
+	local card = make("CanvasGroup", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(0.92, 0, 0, CARD_H),
+		BackgroundColor3 = Color3.fromRGB(20, 20, 23),
+		BorderSizePixel = 0,
+		Active = true,              -- only the card itself eats clicks, not the whole screen
+		GroupTransparency = 1,
+	}, g)
+	make("UICorner", { CornerRadius = UDim.new(0, 14) }, card)
+	make("UIStroke", { Color = Color3.fromRGB(62, 62, 70), Thickness = 1 }, card)
+	make("UISizeConstraint", { MaxSize = Vector2.new(380, CARD_H) }, card)
+
+	-- header (drag handle)
+	local head = make("Frame", { Size = UDim2.new(1, 0, 0, 62), BackgroundTransparency = 1 }, card)
+	make("Frame", {
+		BackgroundColor3 = ORANGE, Size = UDim2.fromOffset(4, 30), Position = UDim2.fromOffset(16, 14), BorderSizePixel = 0,
+	}, head)
+	make("TextLabel", {
+		BackgroundTransparency = 1, Position = UDim2.fromOffset(30, 10), Size = UDim2.new(1, -44, 0, 24),
+		Font = Enum.Font.GothamBold, TextSize = 20, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left,
+		Text = "FLAMETHROWER",
+	}, head)
+	make("TextLabel", {
+		BackgroundTransparency = 1, Position = UDim2.fromOffset(30, 34), Size = UDim2.new(1, -44, 0, 16),
+		Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = MUTED, TextXAlignment = Enum.TextXAlignment.Left,
+		Text = "by DuaKNo & Monkey   -   drag this bar to move",
+	}, head)
+	make("Frame", {
+		BackgroundColor3 = Color3.fromRGB(44, 44, 50), Size = UDim2.new(1, 0, 0, 1), Position = UDim2.fromOffset(0, 61), BorderSizePixel = 0,
+	}, card)
+
+	make("TextLabel", {
+		BackgroundTransparency = 1, Position = UDim2.fromOffset(16, 72), Size = UDim2.new(1, -32, 0, 16),
+		Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = MUTED, TextXAlignment = Enum.TextXAlignment.Left,
+		Text = "Choose a version to load",
+	}, card)
+
+	-- option cards
+	local function option(y, key, title, tag, desc, lag, accent)
+		local b = make("TextButton", {
+			Position = UDim2.new(0, 14, 0, y), Size = UDim2.new(1, -28, 0, 118),
+			BackgroundColor3 = Color3.fromRGB(30, 30, 35), BorderSizePixel = 0,
+			AutoButtonColor = false, Text = "", ClipsDescendants = true,
+		}, card)
+		make("UICorner", { CornerRadius = UDim.new(0, 10) }, b)
+		local stroke = make("UIStroke", { Color = accent, Thickness = 1.5, Transparency = 0.78 }, b)
+		make("Frame", { BackgroundColor3 = accent, Size = UDim2.new(0, 4, 1, 0), BorderSizePixel = 0 }, b)
+
+		make("TextLabel", {
+			BackgroundTransparency = 1, Position = UDim2.fromOffset(18, 12), Size = UDim2.new(1, -140, 0, 22),
+			Font = Enum.Font.GothamBold, TextSize = 17, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left,
+			Text = title,
+		}, b)
+		local pill = make("TextLabel", {
+			AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 13), Size = UDim2.fromOffset(0, 20),
+			AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = accent, BackgroundTransparency = 0.82,
+			Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = accent, Text = tag, BorderSizePixel = 0,
+		}, b)
+		make("UICorner", { CornerRadius = UDim.new(0, 10) }, pill)
+		make("UIPadding", { PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9) }, pill)
+
+		make("TextLabel", {
+			BackgroundTransparency = 1, Position = UDim2.fromOffset(18, 40), Size = UDim2.new(1, -32, 0, 44),
+			Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = MUTED, TextWrapped = true,
+			TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = desc,
+		}, b)
+
+		make("TextLabel", {
+			BackgroundTransparency = 1, Position = UDim2.fromOffset(18, 92), Size = UDim2.fromOffset(40, 14),
+			Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = MUTED, TextXAlignment = Enum.TextXAlignment.Left,
+			Text = "lag",
+		}, b)
+		for i = 1, 3 do
+			local bar = make("Frame", {
+				Position = UDim2.fromOffset(44 + (i - 1) * 18, 96), Size = UDim2.fromOffset(14, 6), BorderSizePixel = 0,
+				BackgroundColor3 = i <= lag and accent or Color3.fromRGB(58, 58, 64),
+			}, b)
+			make("UICorner", { CornerRadius = UDim.new(0, 3) }, bar)
+		end
+
+		local function tweenTo(bg, tr)
+			TweenService:Create(b, TweenInfo.new(0.12), { BackgroundColor3 = bg }):Play()
+			TweenService:Create(stroke, TweenInfo.new(0.12), { Transparency = tr }):Play()
+		end
+		b.MouseEnter:Connect(function() tweenTo(Color3.fromRGB(42, 42, 49), 0) end)
+		b.MouseLeave:Connect(function() tweenTo(Color3.fromRGB(30, 30, 35), 0.78) end)
+		b.Activated:Connect(function()
+			if chosen then return end
+			chosen = key
+			picked:Fire(key)
+		end)
+	end
+	option(96, "full", "Full version", "ALL FEATURES",
+		"Everything in lite plus fuel + pump station, overheating, begging scene and blood.", 3, ORANGE)
+	option(222, "lite", "Flamethrower only", "LIGHTWEIGHT",
+		"Flamethrower, tank + hose, ground fire, napalm, NPC burning and death. No fuel, so it runs lighter.", 1, GREEN)
+
+	make("TextLabel", {
+		BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, CARD_H - 24), Size = UDim2.new(1, 0, 0, 16),
+		Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = Color3.fromRGB(105, 105, 114),
+		Text = "The game stays clickable while this is open.",
+	}, card)
+
+	-- drag by the header (mouse or touch), keep the card on screen
+	do
+		local dragging, dragStart, startPos = false, nil, nil
+		head.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				dragging = true
+				dragStart = input.Position
+				startPos = card.Position
+				input.Changed:Connect(function()
+					if input.UserInputState == Enum.UserInputState.End then dragging = false end
+				end)
+			end
+		end)
+		UserInputService.InputChanged:Connect(function(input)
+			if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+				local d = input.Position - dragStart
+				card.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+				local ap, as, vs = card.AbsolutePosition, card.AbsoluteSize, g.AbsoluteSize
+				local cx = math.clamp(ap.X, 0, math.max(vs.X - as.X, 0))
+				local cy = math.clamp(ap.Y, 0, math.max(vs.Y - as.Y, 0))
+				if cx ~= ap.X or cy ~= ap.Y then
+					card.Position = card.Position + UDim2.fromOffset(cx - ap.X, cy - ap.Y)
+				end
+			end
+		end)
+	end
+
+	TweenService:Create(card, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { GroupTransparency = 0 }):Play()
+
+	local result = chosen or picked.Event:Wait()
+	local fade = TweenService:Create(card, TweenInfo.new(0.18), { GroupTransparency = 1 })
+	fade:Play()
+	fade.Completed:Wait()
+	g:Destroy()
+	picked:Destroy()
+
+	CFG.LITE = (result == "lite")
+	if CFG.LITE then
+		CFG.BLOOD = false
+		CFG.BEG.ENABLED = false
+		CFG.BEG.CINEMATIC = false
+		CFG.HEAT.ENABLED = false
+	end
+end
+
+local ZAX = CFrame.Angles(0, math.rad(90), 0)   -- turns a cylinder (axis X) to point along Z
+local CYL = Enum.PartType.Cylinder
+
+------------------------------------------------------------------ HELPERS
+local function playSoundAt(parent, id, props)
+	if type(id) == "number" then id = "rbxassetid://" .. id end
+	if type(id) == "string" and string.match(id, "^%d+$") then id = "rbxassetid://" .. id end
+	if not id or id == "" or not parent then return nil end
+	local s = Instance.new("Sound")
+	s.SoundId = id
+	s.RollOffMaxDistance = 140
+	for k, v in pairs(props or {}) do s[k] = v end
+	s.Parent = parent
+	s:Play()
+	if not s.Looped then
+		Debris:AddItem(s, 20)
+	end
+	return s
+end
+
+local function notify(title, text, duration, button, callback)
+	task.spawn(function()
+		local data = { Title = title, Text = text, Duration = duration or 4 }
+		if button and callback then
+			local bf = Instance.new("BindableFunction")
+			bf.OnInvoke = callback
+			data.Button1 = button
+			data.Callback = bf
+		end
+		for _ = 1, 10 do
+			if pcall(function() StarterGui:SetCore("SendNotification", data) end) then
+				return
+			end
+			task.wait(0.5)
+		end
+	end)
+end
+
+local function copyDiscord()
+	local ok = false
+	if typeof(setclipboard) == "function" then
+		ok = pcall(setclipboard, CFG.DISCORD)
+	end
+	if ok then
+		notify("Discord", "Invite copied.", 3)
+	else
+		notify("Discord", "Can't copy here, use the box in the popup: " .. CFG.DISCORD, 6)
+	end
+end
+
+local function getChar() return player.Character end
+local function getRoot()
+	local c = getChar()
+	return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function groundAt(pos, ignore)
+	local rp = RaycastParams.new()
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+	rp.FilterDescendantsInstances = ignore or { getChar() }
+	local r = Workspace:Raycast(pos + Vector3.new(0, 8, 0), Vector3.new(0, -120, 0), rp)
+	if r then return r.Position, r.Normal end
+	return pos, Vector3.yAxis
+end
+
+-- folder for all local effects (blood, ground fire, scorch marks)
+local fxFolder = Workspace:FindFirstChild("FlamethrowerFX")
+if not fxFolder then
+	fxFolder = Instance.new("Folder")
+	fxFolder.Name = "FlamethrowerFX"
+	fxFolder.Parent = Workspace
+end
+
+local function fxPart(size, color, mat, shape)
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Size = size
+	p.Color = color
+	p.Material = mat or Enum.Material.SmoothPlastic
+	if shape then p.Shape = shape end
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Parent = fxFolder
+	return p
+end
+
+-- cframe for a flat disc lying on a surface: cylinder axis (local X) = normal, local Y = "down" along the surface
+local function discCF(pos, normal, preferDown)
+	local down = preferDown or Vector3.new(0, -1, 0)
+	local t = down - normal * down:Dot(normal)
+	if t.Magnitude < 0.05 then
+		t = Vector3.xAxis - normal * Vector3.xAxis:Dot(normal)
+		if t.Magnitude < 0.05 then t = Vector3.zAxis end
+	end
+	return CFrame.fromMatrix(pos, normal, t.Unit)
+end
+
+------------------------------------------------------------------ NETWORK OWNERSHIP + KILL (same method as the car spawner)
+-- Raising the SimulationRadius makes the server hand you network ownership of the NPCs around you.
+-- Once you own one, setting its Humanoid.Health to 0 on your client is what everyone sees.
+-- The radius is only raised while the flamethrower is equipped and is restored when you put it away.
+-- Needs an executor with sethiddenproperty; isnetworkowner is used to confirm ownership when it exists.
+CFG.NET = { active = false, original = {}, lastWarn = 0 }
+do
+	local Net = CFG.NET
+	local RADIUS = 1000
+
+	function Net.apply()
+		if not Net.active then return end
+		if typeof(sethiddenproperty) == "function" then
+			pcall(sethiddenproperty, player, "SimulationRadius", RADIUS)
+			pcall(sethiddenproperty, player, "MaximumSimulationRadius", RADIUS)
+		end
+		pcall(function() player.MaximumSimulationRadius = RADIUS end)
+	end
+
+	function Net.restore()
+		pcall(function()
+			if Net.original.maxProp then player.MaximumSimulationRadius = Net.original.maxProp end
+		end)
+		if typeof(sethiddenproperty) ~= "function" then return end
+		if Net.original.sim then pcall(sethiddenproperty, player, "SimulationRadius", Net.original.sim) end
+		if Net.original.max then pcall(sethiddenproperty, player, "MaximumSimulationRadius", Net.original.max) end
+	end
+
+	do
+		local okp, mp = pcall(function() return player.MaximumSimulationRadius end)
+		if okp and type(mp) == "number" then Net.original.maxProp = mp end
+		if typeof(gethiddenproperty) == "function" then
+			local ok1, sr = pcall(gethiddenproperty, player, "SimulationRadius")
+			local ok2, mr = pcall(gethiddenproperty, player, "MaximumSimulationRadius")
+			if ok1 and type(sr) == "number" then Net.original.sim = sr end
+			if ok2 and type(mr) == "number" then Net.original.max = mr end
+		end
+	end
+
+	function Net.setActive(on)
+		if on == Net.active then return end
+		Net.active = on
+		if on then Net.apply() else Net.restore() end
+	end
+
+	function Net.isOwner(part)
+		if typeof(isnetworkowner) ~= "function" then return true end
+		local ok, owned = pcall(isnetworkowner, part)
+		return ok and owned == true
+	end
+
+	function Net.claim(root, timeout)
+		if not root then return false end
+		Net.apply()
+		if typeof(isnetworkowner) ~= "function" then return true end
+		local t = os.clock()
+		while os.clock() - t < (timeout or 1.5) do
+			if Net.isOwner(root) then return true end
+			Net.apply()
+			RunService.Heartbeat:Wait()
+		end
+		return Net.isOwner(root)
+	end
+
+	function Net.killNow(model)
+		pcall(function()
+			for _, d in ipairs(model:GetDescendants()) do
+				if d:IsA("Humanoid") then d.Health = 0 end
+			end
+		end)
+	end
+
+	-- real kill: Health = 0 right away, claim ownership, then keep it for a few seconds so it replicates
+	function Net.kill(model)
+		Net.killNow(model)
+		task.spawn(function()
+			local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+			if root and not Net.claim(root, 1.5) and os.clock() - Net.lastWarn > 6 then
+				Net.lastWarn = os.clock()
+				notify("Flamethrower", "Couldn't get ownership of that NPC, other players may not see it die.", 4)
+			end
+			local t0 = os.clock()
+			while os.clock() - t0 < 4 and model.Parent do
+				Net.apply()
+				Net.killNow(model)
+				task.wait(0.5)
+			end
+		end)
+	end
+end
+
+------------------------------------------------------------------ TIMED FX (blood, scorch, ground fire)
+-- every item: { part, born, update = function(item, age) -> keepAlive }
+local fxItems = {}
+local MAX_FX = 450
+
+local function addFx(item)
+	item.born = os.clock()
+	table.insert(fxItems, item)
+	while #fxItems > MAX_FX do
+		local old = table.remove(fxItems, 1)
+		if old.part and old.part.Parent then old.part:Destroy() end
+		if old.onEnd then old.onEnd(old) end
+	end
+end
+
+task.spawn(function()
+	while not CFG.FT.stopped do
+		task.wait(0.12)
+		local now = os.clock()
+		for i = #fxItems, 1, -1 do
+			local it = fxItems[i]
+			if not it.part.Parent then
+				if it.onEnd then it.onEnd(it) end
+				table.remove(fxItems, i)
+			else
+				local ok, alive = pcall(it.update, it, now - it.born)
+				if not ok or not alive then
+					if it.part.Parent then it.part:Destroy() end
+					if it.onEnd then it.onEnd(it) end
+					table.remove(fxItems, i)
+				end
+			end
+		end
+	end
+end)
+
+------------------------------------------------------------------ BLOOD
+local BLOOD_WET = Color3.fromRGB(150, 8, 8)
+local BLOOD_MID = Color3.fromRGB(94, 10, 9)
+local BLOOD_DRY = Color3.fromRGB(52, 15, 11)
+
+local function bloodStep(it, age)
+	-- grows for a bit, then slowly turns from bright red to dark brown crust
+	local g = math.min(age / it.grow, 1)
+	g = 1 - (1 - g) * (1 - g)
+	it.part.Size = Vector3.new(0.05, math.max(it.sy * g, 0.05), math.max(it.sz * g, 0.05))
+	local c
+	if age < 5 then
+		c = BLOOD_WET:Lerp(BLOOD_MID, age / 5)
+	else
+		c = BLOOD_MID:Lerp(BLOOD_DRY, math.min((age - 5) / 30, 1))
+	end
+	it.part.Color = c
+	it.part.Reflectance = 0.28 * (1 - math.min(age / 14, 1))
+	if age > 14 and it.part.Material ~= Enum.Material.Slate then
+		it.part.Material = Enum.Material.Slate
+	end
+	return not it.lifetime or age < it.lifetime
+end
+
+-- blood stuck on the NPC itself (welded, so it moves with the body and stays on the corpse)
+local function bloodOnBody(model, prof, big)
+	if not CFG.BLOOD then return end
+	local candidates = prof.body
+	if #candidates == 0 then return end
+	local part = candidates[math.random(#candidates)]
+	local s = part.Size
+	local axes = { Vector3.xAxis, -Vector3.xAxis, Vector3.zAxis, -Vector3.zAxis }
+	if part.Name == "Head" then table.insert(axes, Vector3.yAxis) end
+	local n = axes[math.random(#axes)]
+	local face = Vector3.new(n.X * s.X / 2, n.Y * s.Y / 2, n.Z * s.Z / 2)
+	local tang = Vector3.new((math.random() - 0.5) * s.X * 0.7, (math.random() - 0.5) * s.Y * 0.7, (math.random() - 0.5) * s.Z * 0.7)
+	tang = tang - n * tang:Dot(n)
+	local lp = face + tang + n * 0.02
+	local wpos = part.CFrame:PointToWorldSpace(lp)
+	local wn = part.CFrame:VectorToWorldSpace(n)
+
+	local folder = model:FindFirstChild("Blood")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "Blood"
+		folder.Parent = model
+	end
+	if #folder:GetChildren() > 40 then return end
+
+	local d = (big and 0.7 or 0.3) + math.random() * (big and 0.7 or 0.4)
+	local streak = math.random() < 0.5
+	local blob = Instance.new("Part")
+	blob.Shape = CYL
+	blob.Size = Vector3.new(0.05, 0.05, 0.05)
+	blob.Color = BLOOD_WET
+	blob.Material = Enum.Material.SmoothPlastic
+	blob.Reflectance = 0.28
+	blob.CanCollide = false
+	blob.CanQuery = false
+	blob.CanTouch = false
+	blob.Massless = true
+	blob.CastShadow = false
+	blob.CFrame = discCF(wpos, wn)
+	blob.Parent = folder
+	local w = Instance.new("WeldConstraint")
+	w.Part0 = part
+	w.Part1 = blob
+	w.Parent = blob
+	addFx({
+		part = blob, update = bloodStep, grow = 2.5 + math.random() * 2,
+		sy = d * (streak and 1.8 or 1), sz = d * (streak and 0.7 or 1),
+	})
+end
+
+-- blood on the ground (drips and the pool under a body)
+local function bloodOnGround(pos, diameter, growTime, lifetime, ignoreModel)
+	if not CFG.BLOOD then return end
+	local ignore = { fxFolder }
+	if ignoreModel then table.insert(ignore, ignoreModel) end
+	local g, n = groundAt(pos + Vector3.new(0, 2, 0), ignore)
+	local blob = fxPart(Vector3.new(0.05, 0.05, 0.05), BLOOD_WET, Enum.Material.SmoothPlastic, CYL)
+	blob.CFrame = discCF(g + n * (0.03 + math.random() * 0.02), n, Vector3.new(math.random() - 0.5, 0, math.random() - 0.5))
+	local ratio = 0.7 + math.random() * 0.5
+	addFx({ part = blob, update = bloodStep, grow = growTime or 2, sy = diameter, sz = diameter * ratio, lifetime = lifetime or 120 })
+end
+
+------------------------------------------------------------------ SCORCH + GROUND FIRE
+local groundFires = 0
+
+local function groundFire(pos, normal, napalm, child)
+	if groundFires >= (napalm and 16 or 12) then return end
+	groundFires += 1
+	local pal = CFG.pal()
+	local scale = napalm and (child and 1.2 or 1.7) or 1
+	local life = napalm and (child and CFG.NAPALM_LIFE * 0.5 or CFG.NAPALM_LIFE) or (3.2 + math.random() * 1.4)
+	local p = fxPart(Vector3.new(1, 0.2, 1), Color3.new(0, 0, 0), Enum.Material.SmoothPlastic)
+	p.Transparency = 1
+	p.CFrame = CFrame.lookAt(pos, pos + normal) * CFrame.Angles(math.rad(-90), 0, 0)
+	local att = Instance.new("Attachment")
+	att.Parent = p
+	local em = Instance.new("ParticleEmitter")
+	em.Texture = "rbxasset://textures/particles/fire_main.dds"
+	em.Rate = 22 * scale
+	em.Lifetime = NumberRange.new(0.6, 1.1)
+	em.Speed = NumberRange.new(2, 5)
+	em.SpreadAngle = Vector2.new(25, 25)
+	em.LightEmission = 1
+	em.Rotation = NumberRange.new(0, 360)
+	em.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1.3 * scale), NumberSequenceKeypoint.new(1, 0.2 * scale) })
+	em.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.1), NumberSequenceKeypoint.new(1, 1) })
+	em.Color = ColorSequence.new(pal.ground[1], pal.ground[2])
+	em.Parent = att
+	local light = Instance.new("PointLight")
+	light.Color = pal.light
+	light.Range = 9 * scale
+	light.Brightness = 1.6
+	light.Parent = p
+
+	local baseRate, baseBright = em.Rate, light.Brightness
+	local radius = napalm and 5 or 3
+	local nextSpread = os.clock() + 0.4
+	local nextCreep = os.clock() + 2 + math.random() * 2
+
+	-- the patch burns at full strength for a while, then dies down slowly instead of switching off
+	addFx({
+		part = p,
+		onEnd = function() groundFires -= 1 end,
+		update = function(it, age)
+			local left = life - age
+			if left <= 0 then return false end
+			local k = math.clamp(left / (life * 0.6), 0, 1)
+			em.Rate = baseRate * k
+			light.Brightness = baseBright * (0.25 + 0.75 * k)
+			local now = os.clock()
+
+			-- anything standing in the fire catches it
+			if CFG.SPREAD and k > 0.3 and now >= nextSpread then
+				nextSpread = now + 0.5
+				local ps = OverlapParams.new()
+				ps.FilterType = Enum.RaycastFilterType.Exclude
+				ps.FilterDescendantsInstances = { fxFolder }
+				local seen = {}
+				for _, part in ipairs(Workspace:GetPartBoundsInRadius(pos + normal * 1.5, radius, ps)) do
+					local m = part:FindFirstAncestorOfClass("Model")
+					if m and not seen[m] and not Players:GetPlayerFromCharacter(m) then
+						seen[m] = true
+						local h = m:FindFirstChildOfClass("Humanoid")
+						if h and h.Health > 0 then CFG.igniteFn(m, h, napalm) end
+					end
+				end
+			end
+
+			-- napalm creeps: it starts small new patches around itself
+			if napalm and not child and CFG.SPREAD and k > 0.5 and now >= nextCreep then
+				nextCreep = now + 2.5 + math.random() * 2
+				local ang = math.random() * math.pi * 2
+				local off = Vector3.new(math.cos(ang), 0, math.sin(ang)) * (2 + math.random() * 2.5)
+				local g2, n2 = groundAt(pos + off, { fxFolder, getChar() })
+				groundFire(g2 + n2 * 0.03, n2, true, true)
+			end
+			return true
+		end,
+	})
+
+	-- black mark that stays a while, then fades
+	local mark = fxPart(Vector3.new(0.05, (2.2 + math.random() * 1.4) * scale, (2.2 + math.random() * 1.4) * scale), Color3.fromRGB(12, 12, 12), Enum.Material.Slate, CYL)
+	mark.Transparency = 0.3
+	mark.CFrame = discCF(pos + normal * 0.03, normal, Vector3.new(math.random() - 0.5, 0, math.random() - 0.5))
+	addFx({ part = mark, update = function(it, age)
+		if age > 14 then it.part.Transparency = math.min(0.3 + (age - 14) / 14, 1) end
+		return age < 28
+	end })
+end
+
+------------------------------------------------------------------ NPC PROFILE (original colours, body parts, clothes)
+local burning = {}
+local spawned = {}
+local profiles = setmetatable({}, { __mode = "k" })
+local ragdollData = setmetatable({}, { __mode = "k" })
+local kills = 0
+local updateKillLabel = function() end
+
+local SKIN_RED = Color3.fromRGB(172, 42, 34)
+local SCORCH = Color3.fromRGB(78, 24, 19)
+local CHAR_BLACK = Color3.fromRGB(13, 12, 12)
+
+local function burnColor(orig, p)
+	if p <= 0 then return orig end
+	if p < 0.35 then return orig:Lerp(SKIN_RED, p / 0.35) end
+	if p < 0.65 then return SKIN_RED:Lerp(SCORCH, (p - 0.35) / 0.3) end
+	return SCORCH:Lerp(CHAR_BLACK, math.min((p - 0.65) / 0.35, 1))
+end
+
+local function getProfile(model)
+	local prof = profiles[model]
+	if prof then return prof end
+	prof = { parts = {}, cloth = {}, body = {}, level = 0, shown = -1, faces = {} }
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			table.insert(prof.parts, { part = d, color = d.Color, mat = d.Material })
+			if d.Parent == model and d.Name ~= "HumanoidRootPart" then
+				table.insert(prof.body, d)
+			end
+		elseif d:IsA("Shirt") or d:IsA("Pants") or d:IsA("ShirtGraphic") then
+			table.insert(prof.cloth, { inst = d, color = d.Color3 })
+		elseif d:IsA("Decal") and d.Name == "face" then
+			table.insert(prof.faces, d)
+		end
+	end
+	profiles[model] = prof
+	return prof
+end
+
+local function applyLevel(model, p)
+	local prof = getProfile(model)
+	if math.abs(p - prof.shown) < 0.01 then return end
+	prof.shown = p
+	local rocky = p > 0.55
+	for _, e in ipairs(prof.parts) do
+		if e.part.Parent then
+			e.part.Color = burnColor(e.color, p)
+			if rocky and e.part.Material ~= Enum.Material.Slate then
+				e.part.Material = Enum.Material.Slate
+			end
+		end
+	end
+	for _, c in ipairs(prof.cloth) do
+		if c.inst.Parent then c.inst.Color3 = burnColor(c.color, p) end
+	end
+	if p > 0.6 then
+		for _, f in ipairs(prof.faces) do
+			if f.Parent then f.Transparency = math.clamp((p - 0.6) / 0.3, 0, 1) end
+		end
+	end
+end
+
+-- final look: no clothes, no face, no textures, just charred black rock
+local function stripTextures(model)
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("Shirt") or d:IsA("Pants") or d:IsA("ShirtGraphic") or d:IsA("Decal") or d:IsA("SurfaceAppearance") then
+			d:Destroy()
+		elseif d:IsA("MeshPart") then
+			d.TextureID = ""
+		end
+	end
+end
+
+------------------------------------------------------------------ SPEECH BUBBLE
+-- Roblox's own bubble chat (TextChatService:DisplayBubble, or legacy Chat:Chat as a fallback)
+pcall(function()
+	local cfg = game:GetService("TextChatService"):FindFirstChildOfClass("BubbleChatConfiguration")
+	if cfg then cfg.Enabled = true end -- only changes it on your screen
+end)
+
+local function say(model, text)
+	local head = model:FindFirstChild("Head")
+	if not head then return end
+	local shown = false
+	pcall(function()
+		local TextChatService = game:GetService("TextChatService")
+		if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+			TextChatService:DisplayBubble(head, text)
+			shown = true
+		end
+	end)
+	if not shown then
+		pcall(function() game:GetService("Chat"):Chat(head, text, Enum.ChatColor.White) end)
+	end
+end
+
+------------------------------------------------------------------ RAGDOLL
+local function ragdoll(model)
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	if not hum or ragdollData[model] then return end
+	local data = { objs = {}, motors = {}, phys = {} }
+	ragdollData[model] = data
+
+	hum.PlatformStand = true
+	hum.AutoRotate = false
+	pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+
+	for _, m in ipairs(model:GetDescendants()) do
+		-- the root joint stays on: HumanoidRootPart is welded to the torso instead of dangling on its own joint (that jittered)
+		if m:IsA("Motor6D") and m.Part0 and m.Part1 and m.Enabled and m.Part0.Name ~= "HumanoidRootPart" then
+			local a0, a1 = Instance.new("Attachment"), Instance.new("Attachment")
+			a0.CFrame = m.C0
+			a1.CFrame = m.C1
+			a0.Parent = m.Part0
+			a1.Parent = m.Part1
+			local b = Instance.new("BallSocketConstraint")
+			b.Attachment0 = a0
+			b.Attachment1 = a1
+			b.LimitsEnabled = true
+			b.UpperAngle = 65
+			b.TwistLimitsEnabled = true
+			b.TwistLowerAngle = -40
+			b.TwistUpperAngle = 40
+			b.Restitution = 0
+			b.MaxFrictionTorque = 4          -- a little friction so the limbs settle instead of buzzing
+			b.Parent = m.Part0
+			-- neighbouring parts overlap at the joint, they must not push each other apart
+			local nc = Instance.new("NoCollisionConstraint")
+			nc.Part0 = m.Part0
+			nc.Part1 = m.Part1
+			nc.Parent = m.Part0
+			m.Enabled = false
+			table.insert(data.motors, m)
+			table.insert(data.objs, a0)
+			table.insert(data.objs, a1)
+			table.insert(data.objs, b)
+			table.insert(data.objs, nc)
+		end
+	end
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			table.insert(data.phys, { d, d.CustomPhysicalProperties })
+			d.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.7, 0, 1, 1)   -- no bounce
+			if string.find(d.Name, "Hand") or string.find(d.Name, "Foot") then d.CanCollide = false end
+		end
+	end
+	for _, n in ipairs({ "Head", "UpperTorso", "LowerTorso", "Torso" }) do
+		local p = model:FindFirstChild(n)
+		if p then p.CanCollide = true end
+	end
+	local root = model:FindFirstChild("HumanoidRootPart")
+	if root then root.CanCollide = false end
+end
+
+local function unragdoll(model)
+	local data = ragdollData[model]
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	local root = model:FindFirstChild("HumanoidRootPart")
+	if not data or not hum or not root then return end
+	ragdollData[model] = nil
+	for _, o in ipairs(data.objs) do
+		if o.Parent then o:Destroy() end
+	end
+	for _, m in ipairs(data.motors) do
+		if m.Parent then m.Enabled = true end
+	end
+	for _, e in ipairs(data.phys or {}) do
+		if e[1].Parent then e[1].CustomPhysicalProperties = e[2] end
+	end
+	local _, yaw = root.CFrame:ToEulerAnglesYXZ()
+	model:PivotTo(CFrame.new(root.Position + Vector3.new(0, 2.5, 0)) * CFrame.Angles(0, yaw, 0))
+	hum.PlatformStand = false
+	hum.AutoRotate = true
+	hum.WalkSpeed = 9
+	pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+end
+
+local function flail(model, strength)
+	local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+	if root then
+		local s = strength or 1
+		root.AssemblyAngularVelocity = Vector3.new(math.random(-5, 5), math.random(-5, 5), math.random(-5, 5)) * s
+		root.AssemblyLinearVelocity = root.AssemblyLinearVelocity + Vector3.new(math.random(-3, 3) * s, math.random(2, 6) * s, math.random(-3, 3) * s)
+	end
+end
+
+------------------------------------------------------------------ FIRE ON NPC
+local function makeFlameEmitter(parent, size)
+	local em = Instance.new("ParticleEmitter")
+	em.Texture = "rbxasset://textures/particles/fire_main.dds"
+	em.Rate = 16
+	em.Lifetime = NumberRange.new(0.5, 0.9)
+	em.Speed = NumberRange.new(2, 5)
+	em.SpreadAngle = Vector2.new(35, 35)
+	em.Acceleration = Vector3.new(0, 9, 0)
+	em.LightEmission = 1
+	em.Rotation = NumberRange.new(0, 360)
+	em.RotSpeed = NumberRange.new(-60, 60)
+	em.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, size), NumberSequenceKeypoint.new(1, size * 0.15) })
+	em.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1), NumberSequenceKeypoint.new(0.6, 0.35), NumberSequenceKeypoint.new(1, 1),
+	})
+	em.Color = CFG.seq3(CFG.pal().npc)
+	em.Parent = parent
+	return em
+end
+
+local function makeSmokeEmitter(parent, rate, size)
+	local em = Instance.new("ParticleEmitter")
+	em.Texture = "rbxasset://textures/particles/smoke_main.dds"
+	em.Rate = rate
+	em.Lifetime = NumberRange.new(1.4, 2.6)
+	em.Speed = NumberRange.new(3, 6)
+	em.SpreadAngle = Vector2.new(20, 20)
+	em.Acceleration = Vector3.new(0, 6, 0)
+	em.LightEmission = 0
+	em.Rotation = NumberRange.new(0, 360)
+	em.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, size), NumberSequenceKeypoint.new(1, size * 3.5) })
+	em.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.55), NumberSequenceKeypoint.new(1, 1) })
+	em.Color = ColorSequence.new(Color3.fromRGB(48, 46, 46), Color3.fromRGB(22, 22, 22))
+	em.Parent = parent
+	return em
+end
+
+local function setFireIntensity(state, k)
+	for _, e in ipairs(state.flames) do
+		if e.em.Parent then e.em.Rate = e.rate * k end
+	end
+	for _, e in ipairs(state.smokes) do
+		if e.em.Parent then e.em.Rate = e.rate * math.max(k, 0.25) end
+	end
+	if state.light and state.light.Parent then
+		state.light.Brightness = (1.2 + math.random() * 1.1) * k
+	end
+end
+
+local function removeFire(state)
+	for _, e in ipairs(state.flames) do
+		if e.em.Parent then e.em:Destroy() end
+	end
+	for _, e in ipairs(state.smokes) do
+		if e.em.Parent then e.em:Destroy() end
+	end
+	if state.light and state.light.Parent then state.light:Destroy() end
+	if state.blood and state.blood.Parent then state.blood:Destroy() end
+	state.flames, state.smokes = {}, {}
+	if state.scream then
+		state.scream:Stop()
+		state.scream:Destroy()
+		state.scream = nil
+	end
+end
+
+local function killNPC(model, state)
+	if state.dead then return end
+	state.dead = true
+	state.deathTime = os.clock()
+	if state.scream then
+		state.scream:Stop()
+		state.scream:Destroy()
+		state.scream = nil
+	end
+	if state.blood and state.blood.Parent then
+		state.blood.Rate = 0
+		state.blood:Emit(35)
+	end
+	local khum = state.hum
+	if khum and khum.Parent then
+		khum.BreakJointsOnDeath = false   -- joints stay, the ragdoll constraints drop the body
+		khum.RequiresNeck = false
+	end
+	ragdoll(model)
+	CFG.NET.kill(model)
+	local prof = getProfile(model)
+	applyLevel(model, 1)
+	stripTextures(model)
+	say(model, "...")
+
+	local hum = state.hum
+	if hum and hum.Parent then
+		hum.HealthDisplayType = Enum.HumanoidHealthDisplayType.DisplayWhenDamaged
+	end
+
+	local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+	if root then
+		playSoundAt(root, CFG.SOUNDS.DEATH, { Volume = 1 })
+		-- heavy dark smoke from the corpse
+		local att = Instance.new("Attachment")
+		att.Parent = root
+		local sm = makeSmokeEmitter(att, 10, 2.2)
+		sm.Lifetime = NumberRange.new(2.2, 3.8)
+		task.delay(14, function()
+			if sm.Parent then sm.Enabled = false end
+			Debris:AddItem(att, 5)
+		end)
+		-- pool of blood spreads under the body, a few more wounds open up
+		task.delay(0.6, function()
+			if root.Parent then bloodOnGround(root.Position, 3.2 + math.random() * 1.6, 9, (CFG.CORPSE_TIME or 0) > 0 and CFG.CORPSE_TIME + 30 or 600, model) end
+		end)
+	end
+	for _ = 1, 4 do bloodOnBody(model, prof, true) end
+	kills += 1
+	updateKillLabel()
+
+	-- the corpse fades away after CORPSE_TIME seconds
+	if (CFG.CORPSE_TIME or 0) > 0 then
+		task.delay(CFG.CORPSE_TIME, function()
+			if not model.Parent then return end
+			local TweenService = game:GetService("TweenService")
+			local h = model:FindFirstChildOfClass("Humanoid")
+			if h then
+				h.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+				h.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+			end
+			for _, d in ipairs(model:GetDescendants()) do
+				if d:IsA("BasePart") then
+					d.CanCollide = false
+					TweenService:Create(d, TweenInfo.new(1.5), { Transparency = 1 }):Play()
+				elseif d:IsA("ParticleEmitter") then
+					d.Enabled = false
+				end
+			end
+			task.delay(1.6, function()
+				local st = burning[model]
+				if st then
+					removeFire(st)
+					burning[model] = nil
+				end
+				if model.Parent then model:Destroy() end
+			end)
+		end)
+	end
+end
+
+local function ignite(model, hum, napalm)
+	local state = burning[model]
+	local life = CFG.BURN_TIME * (napalm and 3 or 1)
+	if state then
+		state.expire = math.max(state.expire, os.clock() + life)
+		return
+	end
+	if hum.Health <= 0 then return end
+
+	local prof = getProfile(model)
+	hum.BreakJointsOnDeath = false
+	hum.RequiresNeck = false
+
+	state = {
+		hum = hum, flames = {}, smokes = {}, start = os.clock(), expire = os.clock() + life, nextSpread = 0,
+		nextBlood = 0, nextDrip = 0, nextSay = 0, nextTurn = 0, nextVis = 0, dir = Vector3.new(1, 0, 0),
+		drips = 0, maxHealth = math.max(hum.MaxHealth, 1),
+	}
+	burning[model] = state
+	local ownRoot = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+	if ownRoot then task.spawn(CFG.NET.claim, ownRoot, 1.5) end
+	hum.WalkSpeed = CFG.PANIC_SPEED
+	hum.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOn
+	hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+
+	for _, part in ipairs(prof.body) do
+		if part.Size.Magnitude >= 1.3 then
+			local f = math.clamp(part.Size.Magnitude / 2.2, 0.5, 1.5)
+			table.insert(state.flames, { em = makeFlameEmitter(part, 1.5 * f), rate = 16 + 10 * f })
+			if part.Name == "Head" or part.Name == "UpperTorso" or part.Name == "Torso" then
+				table.insert(state.smokes, { em = makeSmokeEmitter(part, 5, 1.2), rate = 5 })
+			end
+		end
+	end
+
+	local torso = model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso") or model:FindFirstChild("HumanoidRootPart")
+	if torso then
+		local l = Instance.new("PointLight")
+		l.Color = CFG.pal().light
+		l.Range = 14
+		l.Brightness = 2
+		l.Parent = torso
+		state.light = l
+
+		-- droplets spraying off the body
+		local b = Instance.new("ParticleEmitter")
+		b.Texture = "rbxasset://textures/particles/smoke_main.dds"
+		b.Rate = 6
+		b.Lifetime = NumberRange.new(0.5, 0.9)
+		b.Speed = NumberRange.new(4, 9)
+		b.SpreadAngle = Vector2.new(180, 180)
+		b.Acceleration = Vector3.new(0, -48, 0)
+		b.LightEmission = 0
+		b.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.22), NumberSequenceKeypoint.new(1, 0.08) })
+		b.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.1), NumberSequenceKeypoint.new(1, 0.8) })
+		b.Color = ColorSequence.new(Color3.fromRGB(150, 6, 6), Color3.fromRGB(80, 6, 6))
+		b.Enabled = CFG.BLOOD
+		b.Parent = torso
+		state.blood = b
+	end
+
+	local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+	if root then
+		playSoundAt(root, CFG.SOUNDS.IGNITE, { Volume = 0.9 })
+		local list = CFG.SOUNDS.SCREAM
+		state.scream = playSoundAt(root, list[math.random(1, #list)], {
+			Looped = true, Volume = 1, PlaybackSpeed = 0.9 + math.random() * 0.35,
+		})
+	end
+	bloodOnBody(model, prof, false)
+	bloodOnBody(model, prof, false)
+	say(model, CFG.SCREAM_LINES[math.random(1, #CFG.SCREAM_LINES)])
+end
+
+CFG.igniteFn = ignite
+
+local function burnStep(model, state, dt, now)
+	local hum = state.hum
+	if not model.Parent or not hum.Parent then
+		removeFire(state)
+		burning[model] = nil
+		return
+	end
+
+	-- corpse: flames die down slowly, then it's just smoke and blood
+	if state.dead then
+		local k = 1 - (now - state.deathTime) / 7
+		if k <= 0 then
+			removeFire(state)
+			burning[model] = nil
+		else
+			setFireIntensity(state, k)
+		end
+		return
+	end
+
+	if hum.Health <= 0 then
+		killNPC(model, state)
+		return
+	end
+
+	-- fire went out (it dies down over FADE_TIME first)
+	if now > state.expire + CFG.FADE_TIME then
+		removeFire(state)
+		burning[model] = nil
+		if ragdollData[model] then
+			task.delay(CFG.RECOVER_DELAY, function()
+				if model.Parent and hum.Health > 0 and not burning[model] then unragdoll(model) end
+			end)
+		else
+			hum.WalkSpeed = 10
+		end
+		return
+	end
+
+	local fk = 1
+	if now > state.expire then fk = math.clamp(1 - (now - state.expire) / CFG.FADE_TIME, 0, 1) end
+	local newHealth = hum.Health - CFG.BURN_DPS * dt * math.max(fk, 0.25)
+	if newHealth <= 0 then
+		killNPC(model, state)
+		return
+	end
+	hum.Health = newHealth
+	local p = 1 - hum.Health / state.maxHealth
+	setFireIntensity(state, fk)
+
+	-- a burning NPC sets close-by NPCs on fire
+	if CFG.SPREAD and fk > 0.4 and now >= state.nextSpread then
+		state.nextSpread = now + 0.6
+		local sroot = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+		if sroot then
+			local ps = OverlapParams.new()
+			ps.FilterType = Enum.RaycastFilterType.Exclude
+			ps.FilterDescendantsInstances = { fxFolder, model, getChar() }
+			local seen = {}
+			for _, part in ipairs(Workspace:GetPartBoundsInRadius(sroot.Position, CFG.SPREAD_RADIUS, ps)) do
+				local m = part:FindFirstAncestorOfClass("Model")
+				if m and not seen[m] then
+					seen[m] = true
+					local h = m:FindFirstChildOfClass("Humanoid")
+					if h and h.Health > 0 and not burning[m] and not Players:GetPlayerFromCharacter(m) and math.random() < 0.45 then
+						ignite(m, h)
+					end
+				end
+			end
+		end
+	end
+
+	if now >= state.nextVis then
+		state.nextVis = now + 0.1
+		local prof = getProfile(model)
+		prof.level = math.max(prof.level, p)
+		applyLevel(model, prof.level)
+	end
+
+	-- more blood as it gets worse
+	if state.blood then state.blood.Rate = 4 + p * 14 end
+	local prof = getProfile(model)
+	if now >= state.nextBlood and p > 0.05 then
+		state.nextBlood = now + 0.9 - p * 0.5
+		bloodOnBody(model, prof, p > 0.5)
+	end
+	if now >= state.nextDrip and p > 0.1 and state.drips < 14 then
+		state.nextDrip = now + 0.7
+		state.drips += 1
+		local root = model:FindFirstChild("HumanoidRootPart")
+		if root then
+			bloodOnGround(root.Position + Vector3.new(math.random() - 0.5, 0, math.random() - 0.5) * 3, 0.3 + math.random() * 0.5, 1.6, 90, model)
+		end
+	end
+
+	if not ragdollData[model] and now - state.start >= CFG.RAGDOLL_DELAY then
+		ragdoll(model)
+		flail(model, 1)
+		state.nextFlail = now + 0.5
+	end
+	if ragdollData[model] then
+		if now >= (state.nextFlail or 0) then
+			state.nextFlail = now + 1.1
+			flail(model, 0.2)
+		end
+	else
+		if now >= state.nextTurn then
+			state.nextTurn = now + 0.5 + math.random() * 0.7
+			local a = math.random() * math.pi * 2
+			state.dir = Vector3.new(math.cos(a), 0, math.sin(a))
+			if math.random() < 0.2 then hum.Jump = true end
+		end
+		hum:Move(state.dir, false)
+	end
+
+	if now >= state.nextSay then
+		state.nextSay = now + 1.5
+		say(model, CFG.SCREAM_LINES[math.random(1, #CFG.SCREAM_LINES)])
+	end
+	if hum.Health <= 0 then killNPC(model, state) end
+end
+
+RunService.Heartbeat:Connect(function(dt)
+	local now = os.clock()
+	for model, state in pairs(burning) do
+		burnStep(model, state, dt, now)
+	end
+end)
+
+------------------------------------------------------------------ FUEL STATE + AIM
+local fuel = CFG.FUEL_MAX
+local lowWarned = false
+local lastEmptyNotify = 0
+local refueling = nil                          -- station currently filling the tank
+local updateFuelUI = function() end            -- assigned below
+CFG.setMenuVisible = function(_) end           -- assigned in the UI section (menu shows only while equipped)
+local setFuelHudVisible = function(_) end      -- assigned below
+local activeRig = nil
+local rigOf = {}      -- [tool] = rig
+local muzzleOf = {}   -- [tool] = muzzle part
+local fxOf = {}       -- [tool] = flame fx
+
+------------------------------------------------------------------ GUN FIT (position / tilt / rotation)
+local fit = { x = 0, y = 0, z = 0, pitch = 0, yaw = 0, roll = 0 }
+local shiftLockOn = false
+local menuFree = false      -- true while you hold Ctrl/Alt or pressed M: the mouse is free so you can click the menu
+for k, v in pairs(CFG.GUN_FIT or {}) do
+	if fit[k] ~= nil and type(v) == "number" then fit[k] = v end
+end
+local function fitMove() return CFrame.new(fit.x, fit.y, -fit.z) end   -- z: + is forward
+local function fitRot()
+	return CFrame.Angles(math.rad(fit.pitch), math.rad(fit.yaw), math.rad(fit.roll))
+end
+
+-- store model: the avatar holds it through the tool's RightGrip weld, so we nudge that weld.
+-- The gun turns around the point where your hand grips it.
+local gripBase = setmetatable({}, { __mode = "k" })
+local function applyGripFit()
+	local char = getChar()
+	if not char then return end
+	local hand = char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm")
+	local w = hand and hand:FindFirstChild("RightGrip")
+	if not (w and w:IsA("JointInstance")) then return end
+	local base = gripBase[w]
+	if not base then
+		base = w.C0
+		gripBase[w] = base
+	end
+	w.C0 = base * fitMove() * fitRot()
+end
+
+local function getHandle(tool)
+	return tool:FindFirstChild("Handle") or tool:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function getMuzzle(tool)
+	local m = muzzleOf[tool]
+	if m and m.Parent then return m end
+	return getHandle(tool)
+end
+
+-- world position of the flame tip: built-in muzzle, a named part/attachment, or the far end of the handle
+local TIP_NAMES = { "muzzle", "nozzle", "flamepoint", "firepoint", "firepos", "tip", "spout" }
+local function muzzlePoint(tool)
+	local m = muzzleOf[tool]
+	if m and m.Parent then return m.Position end
+	local h = getHandle(tool)
+	if not h then return nil end
+	for _, d in ipairs(tool:GetDescendants()) do
+		if d:IsA("Attachment") or d:IsA("BasePart") then
+			local n = string.lower(d.Name)
+			local hit = CFG.MUZZLE_NAME ~= "" and d.Name == CFG.MUZZLE_NAME
+			if not hit and CFG.MUZZLE_NAME == "" then
+				for _, k in ipairs(TIP_NAMES) do
+					if string.find(n, k, 1, true) then hit = true break end
+				end
+			end
+			if hit then
+				return d:IsA("Attachment") and d.WorldPosition or d.Position
+			end
+		end
+	end
+	local sz = h.Size
+	local axis, len = Vector3.xAxis, sz.X
+	if sz.Y > len then axis, len = Vector3.yAxis, sz.Y end
+	if sz.Z > len then axis, len = Vector3.zAxis, sz.Z end
+	local v = h.CFrame:VectorToWorldSpace(axis)
+	local root = getRoot()
+	if root and v:Dot(root.CFrame.LookVector) < 0 then v = -v end
+	return h.Position + v * (len / 2)
+end
+
+local function ignoreList()
+	local list = { fxFolder }
+	local c = getChar()
+	if c then table.insert(list, c) end
+	return list
+end
+
+-- world point under the crosshair (mouse on PC, screen centre on phones)
+local function aimPoint()
+	local cam = Workspace.CurrentCamera
+	if not cam then return nil end
+	local vp
+	if (shiftLockOn and not menuFree) or (UserInputService.TouchEnabled and not UserInputService.MouseEnabled) then
+		vp = cam.ViewportSize / 2
+	else
+		vp = UserInputService:GetMouseLocation()
+	end
+	local ray = cam:ViewportPointToRay(vp.X, vp.Y)
+	local rp = RaycastParams.new()
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+	rp.FilterDescendantsInstances = ignoreList()
+	local r = Workspace:Raycast(ray.Origin, ray.Direction * 600, rp)
+	return r and r.Position or (ray.Origin + ray.Direction * 600)
+end
+
+local function getAimDir(origin)
+	local p = aimPoint()
+	if not p then return nil end
+	local d = p - origin
+	if d.Magnitude > 0.5 then return d.Unit end
+	return nil
+end
+
+-- stable frame for the gun: the torso position, but only the yaw of the character root, so walking and
+-- running animations (lean, bob) can never shake or tilt the gun
+local function stanceRef(torso)
+	local root = getRoot()
+	local look = (root or torso).CFrame.LookVector
+	local yaw = math.atan2(-look.X, -look.Z)
+	return CFrame.new(torso.Position) * CFrame.Angles(0, yaw, 0)
+end
+
+-- the gun only tips up/down with the crosshair (yaw is limited) so it doesn't swing around when you look around
+local function updateOrient(rig, ref, from)
+	local dir = getAimDir(from)
+	local target = CFrame.identity
+	if dir then
+		local l = ref:VectorToObjectSpace(dir)
+		local yaw = math.clamp(math.atan2(-l.X, -l.Z), -0.35, 0.35)
+		local pitch = math.clamp(math.asin(math.clamp(l.Y, -1, 1)), -1.0, 1.0)
+		target = CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
+	end
+	rig.orient = rig.orient:Lerp(target, 0.5)
+end
+
+local function notifyEmpty()
+	if os.clock() - lastEmptyNotify < 2.5 then return end
+	lastEmptyNotify = os.clock()
+	notify("Out of fuel", "Find a fuel station and hold the prompt to refill.", 4)
+	playSoundAt(getRoot(), CFG.SOUNDS.EMPTY, { Volume = 1 })
+end
+
+local function useFuel(dt)
+	if CFG.LITE then return true end
+	fuel = math.max(0, fuel - CFG.FUEL_DRAIN * dt)
+	updateFuelUI()
+	if fuel <= 0 then
+		notifyEmpty()
+		return false
+	end
+	if fuel <= CFG.FUEL_LOW and not lowWarned then
+		lowWarned = true
+		notify("Fuel low", "Head to a fuel station soon.", 3)
+	end
+	return true
+end
+
+------------------------------------------------------------------ SHIFT LOCK + CROSSHAIR
+local crosshairWanted = 0                            -- > 0 while a flamethrower is equipped
+local firingNow = false
+
+local function setShiftLock(on)
+	if on == shiftLockOn then return end
+	shiftLockOn = on
+	local char = getChar()
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not on then
+		if hum then hum.AutoRotate = true end
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	end
+end
+
+do -- private bits live in their own scope (Luau allows only 200 top-level locals)
+local menuToggled = false
+	local SHIFT_CAM_OFFSET = Vector3.new(1.7, 0.25, 0)   -- camera sits over your right shoulder
+local crossSpread = 9
+
+local chGui = Instance.new("ScreenGui")
+chGui.Name = "FlamethrowerCrosshair"
+chGui.ResetOnSpawn = false
+chGui.IgnoreGuiInset = true
+chGui.DisplayOrder = 50
+chGui.Enabled = false
+chGui.Parent = player:WaitForChild("PlayerGui")
+
+local chRoot = Instance.new("Frame")
+chRoot.AnchorPoint = Vector2.new(0.5, 0.5)
+chRoot.Size = UDim2.fromOffset(0, 0)
+chRoot.BackgroundTransparency = 1
+chRoot.Parent = chGui
+
+local chParts = {}
+local function chPiece(w, h, dx, dy)
+	local f = Instance.new("Frame")
+	f.AnchorPoint = Vector2.new(0.5, 0.5)
+	f.Size = UDim2.fromOffset(w, h)
+	f.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
+	f.BorderSizePixel = 0
+	f.Parent = chRoot
+	local st = Instance.new("UIStroke")
+	st.Color = Color3.fromRGB(15, 15, 15)
+	st.Thickness = 1
+	st.Parent = f
+	table.insert(chParts, { frame = f, dx = dx, dy = dy })
+end
+chPiece(3, 3, 0, 0)    -- centre dot
+chPiece(2, 8, 0, -1)   -- ticks
+chPiece(2, 8, 0, 1)
+chPiece(8, 2, -1, 0)
+chPiece(8, 2, 1, 0)
+
+
+RunService:BindToRenderStep("FlamethrowerShiftLock", Enum.RenderPriority.Camera.Value + 1, function(dt)
+	local char = getChar()
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	local cam = Workspace.CurrentCamera
+	if not cam then return end
+	local k = math.clamp(dt * 12, 0, 1)
+
+	if shiftLockOn and hum and root and hum.Health > 0 then
+		hum.AutoRotate = false
+		menuFree = menuToggled or UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt)
+		if UserInputService.MouseEnabled then
+			UserInputService.MouseBehavior = menuFree and Enum.MouseBehavior.Default or Enum.MouseBehavior.LockCenter
+		end
+		hum.CameraOffset = hum.CameraOffset:Lerp(SHIFT_CAM_OFFSET, k)
+		local look = cam.CFrame.LookVector
+		local flat = Vector3.new(look.X, 0, look.Z)
+		if flat.Magnitude > 0.01 and not menuFree then
+			root.CFrame = CFrame.lookAt(root.Position, root.Position + flat)
+		end
+	elseif hum and hum.CameraOffset.Magnitude > 0.01 then
+		hum.CameraOffset = hum.CameraOffset:Lerp(Vector3.zero, k)
+	end
+
+	-- crosshair: centre of the screen while locked (and always on phones while the gun is out)
+	if not shiftLockOn then menuFree, menuToggled = false, false end
+	local show = crosshairWanted > 0 and not menuFree and (shiftLockOn or (UserInputService.TouchEnabled and not UserInputService.MouseEnabled))
+	chGui.Enabled = show
+	if show then
+		local vs = cam.ViewportSize
+		chRoot.Position = UDim2.fromOffset(math.floor(vs.X / 2), math.floor(vs.Y / 2))
+		crossSpread += ((firingNow and 17 or 9) - crossSpread) * math.min(dt * 18, 1)
+		for _, pc in ipairs(chParts) do
+			pc.frame.Position = UDim2.fromOffset(pc.dx * crossSpread, pc.dy * crossSpread)
+			pc.frame.BackgroundColor3 = firingNow and Color3.fromRGB(255, 150, 60) or Color3.fromRGB(245, 245, 245)
+		end
+	end
+end)
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then return end
+	if input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift then
+		setShiftLock(not shiftLockOn)
+	elseif input.KeyCode == Enum.KeyCode.M and shiftLockOn then
+		menuToggled = not menuToggled   -- M: free the mouse for the menu until you press M again
+	end
+end)
+end
+
+------------------------------------------------------------------ FLAME EFFECT (muzzle)
+local function buildFlameFX(parentPart)
+	local att = Instance.new("Attachment")
+	att.Name = "FlameAtt"
+	att.Parent = parentPart
+	local list = {}
+
+	local function emitter(tex, props)
+		local e = Instance.new("ParticleEmitter")
+		e.Texture = tex
+		e.EmissionDirection = Enum.NormalId.Front
+		e.Enabled = false
+		for k, v in pairs(props) do e[k] = v end
+		e.Parent = att
+		table.insert(list, e)
+		return e
+	end
+	local FIRE = "rbxasset://textures/particles/fire_main.dds"
+
+	-- hot white-yellow core
+	emitter(FIRE, {
+		Rate = 240, Lifetime = NumberRange.new(0.3, 0.45), Speed = NumberRange.new(52, 62),
+		SpreadAngle = Vector2.new(2, 2), LightEmission = 1, Rotation = NumberRange.new(0, 360),
+		Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 1.6) }),
+		Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.6, 0.3), NumberSequenceKeypoint.new(1, 1) }),
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 250, 215)),
+			ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 200, 80)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 120, 30)),
+		}),
+	})
+	-- orange body of the flame
+	emitter(FIRE, {
+		Rate = 170, Lifetime = NumberRange.new(0.5, 0.8), Speed = NumberRange.new(36, 48),
+		SpreadAngle = Vector2.new(8, 8), LightEmission = 0.85, Acceleration = Vector3.new(0, 7, 0),
+		Rotation = NumberRange.new(0, 360), RotSpeed = NumberRange.new(-90, 90),
+		Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 5.5) }),
+		Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.15), NumberSequenceKeypoint.new(0.5, 0.45), NumberSequenceKeypoint.new(1, 1) }),
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 190, 70)),
+			ColorSequenceKeypoint.new(0.45, Color3.fromRGB(240, 90, 15)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(70, 22, 10)),
+		}),
+	})
+	-- black soot trailing off the end
+	emitter("rbxasset://textures/particles/smoke_main.dds", {
+		Rate = 40, Lifetime = NumberRange.new(1.1, 1.9), Speed = NumberRange.new(16, 26),
+		SpreadAngle = Vector2.new(14, 14), LightEmission = 0, Acceleration = Vector3.new(0, 10, 0),
+		Rotation = NumberRange.new(0, 360),
+		Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 2), NumberSequenceKeypoint.new(1, 7) }),
+		Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.7), NumberSequenceKeypoint.new(0.3, 0.6), NumberSequenceKeypoint.new(1, 1) }),
+		Color = ColorSequence.new(Color3.fromRGB(55, 52, 50), Color3.fromRGB(22, 22, 22)),
+	})
+	-- burning droplets
+	emitter("rbxasset://textures/particles/sparkles_main.dds", {
+		Rate = 38, Lifetime = NumberRange.new(0.6, 1.2), Speed = NumberRange.new(24, 42),
+		SpreadAngle = Vector2.new(16, 16), LightEmission = 1, Acceleration = Vector3.new(0, -32, 0),
+		Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.28), NumberSequenceKeypoint.new(1, 0.05) }),
+		Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }),
+		Color = ColorSequence.new(Color3.fromRGB(255, 190, 80), Color3.fromRGB(255, 90, 20)),
+	})
+
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 150, 60)
+	light.Range = 30
+	light.Brightness = 3.5
+	light.Enabled = false
+	light.Parent = parentPart
+
+	return { att = att, emitters = list, light = light }
+end
+
+local function setFiring(fx, on)
+	if on then
+		local pal, E = CFG.pal(), fx.emitters
+		local napalm = CFG.NAPALM
+		if E[1] then E[1].Color = CFG.seq3(pal.core) end
+		if E[2] then
+			E[2].Color = CFG.seq3(pal.body)
+			E[2].Lifetime = napalm and NumberRange.new(0.7, 1.1) or NumberRange.new(0.5, 0.8)
+		end
+		if E[3] then E[3].Rate = napalm and 90 or 40 end
+		if E[4] then E[4].Color = ColorSequence.new(pal.drop[1], pal.drop[2]) end
+		fx.light.Color = pal.light
+	end
+	for _, e in ipairs(fx.emitters) do e.Enabled = on end
+	fx.light.Enabled = on
+end
+
+------------------------------------------------------------------ ROPE (verlet) used for the gun hose and the pump hose
+local function newRope(n)
+	return { pts = {}, prev = {}, n = n, t = os.clock() }
+end
+
+local function ropeFill(r, A, B)
+	for i = 1, r.n do
+		local t = (i - 1) / (r.n - 1)
+		local p = A:Lerp(B, t) + Vector3.new(0, -math.sin(t * math.pi) * 0.4, 0)
+		r.pts[i] = p
+		r.prev[i] = p
+	end
+end
+
+local function ropeStep(r, A, B, length, collide)
+	local now = os.clock()
+	local dt = math.clamp(now - r.t, 1 / 240, 1 / 20)
+	r.t = now
+	local pts, prev, n = r.pts, r.prev, r.n
+	local rest = length / (n - 1)
+	local g = Vector3.new(0, -70 * dt * dt, 0)
+
+	for i = 2, n - 1 do
+		local p = pts[i]
+		pts[i] = p + (p - prev[i]) * 0.96 + g
+		prev[i] = p
+	end
+	for _ = 1, 10 do
+		pts[1], pts[n] = A, B
+		for i = 1, n - 1 do
+			local d = pts[i + 1] - pts[i]
+			local m = d.Magnitude
+			if m > rest then
+				local corr = d * ((m - rest) / m)
+				if i == 1 then
+					pts[i + 1] = pts[i + 1] - corr
+				elseif i + 1 == n then
+					pts[i] = pts[i] + corr
+				else
+					pts[i] = pts[i] + corr * 0.5
+					pts[i + 1] = pts[i + 1] - corr * 0.5
+				end
+			end
+		end
+		if collide then collide(pts, n) end
+	end
+	pts[1], pts[n] = A, B
+end
+
+local function ropeMakeSegments(parent, count, thickness, color, mat)
+	local segs = {}
+	for i = 1, count do
+		local s = Instance.new("Part")
+		s.Name = "Seg" .. i
+		s.Shape = CYL
+		s.Size = Vector3.new(0.3, thickness, thickness)
+		s.Color = color
+		s.Material = mat or Enum.Material.SmoothPlastic
+		s.Anchored = true
+		s.CanCollide = false
+		s.CanQuery = false
+		s.CanTouch = false
+		s.CastShadow = false
+		s.TopSurface = Enum.SurfaceType.Smooth
+		s.BottomSurface = Enum.SurfaceType.Smooth
+		s.Parent = parent
+		segs[i] = s
+	end
+	return segs
+end
+
+local function ropeRender(r, segs, thickness)
+	for i = 1, #segs do
+		local pa, pb = r.pts[i], r.pts[i + 1]
+		local len = (pb - pa).Magnitude
+		if len > 0.001 then
+			segs[i].Size = Vector3.new(len + 0.03, thickness, thickness)
+			segs[i].CFrame = CFrame.lookAt((pa + pb) / 2, pb) * ZAX
+		end
+	end
+end
+
+------------------------------------------------------------------ BUILT-IN FLAMETHROWER (wand + banded tank + hose)
+local GUNMETAL = Color3.fromRGB(40, 42, 46)
+local BLACK = Color3.fromRGB(22, 22, 25)
+local STEEL = Color3.fromRGB(92, 95, 100)
+local WOOD = Color3.fromRGB(84, 56, 34)
+local TAN = Color3.fromRGB(178, 154, 102)
+local BRASS = Color3.fromRGB(170, 132, 58)
+local GREEN = Color3.fromRGB(80, 210, 90)
+local AMBER = Color3.fromRGB(255, 180, 30)
+local RED = Color3.fromRGB(225, 55, 45)
+local HOT = Color3.fromRGB(255, 120, 20)
+local PIVOT = CFrame.new(0.5, 0.62, -0.15)        -- shoulder-height point the gun swings around, arms reach out to it
+local TANK_C0 = CFrame.new(0, -0.05, 1.06)       -- tank centre behind the torso
+local PORT_LOCAL = CFrame.new(0.62, 0.55, 0)     -- fuel port on the tank, faces right
+
+local function mkPart(parent, name, size, color, mat, shape)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = size
+	p.Color = color
+	p.Material = mat or Enum.Material.Metal
+	if shape then p.Shape = shape end
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.Massless = true
+	p.CastShadow = false
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Parent = parent
+	return p
+end
+
+local function weldTo(a, b, c0)
+	local w = Instance.new("Weld")
+	w.Part0 = a
+	w.Part1 = b
+	w.C0 = c0
+	w.Parent = b
+	return w
+end
+
+------------------------------------------------ fuel HUD
+local fuelGui, fuelTitle, fuelFill
+do
+	fuelGui = Instance.new("ScreenGui")
+	fuelGui.Name = "FlamethrowerFuelHUD"
+	fuelGui.ResetOnSpawn = false
+	fuelGui.Enabled = false
+	fuelGui.Parent = player:WaitForChild("PlayerGui")
+
+	local frame = Instance.new("Frame")
+	frame.AnchorPoint = Vector2.new(0.5, 1)
+	frame.Position = UDim2.new(0.5, 0, 1, -110)
+	frame.Size = UDim2.fromOffset(240, 38)
+	frame.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
+	frame.BackgroundTransparency = 0.2
+	frame.BorderSizePixel = 1
+	frame.BorderColor3 = Color3.fromRGB(80, 80, 80)
+	frame.Parent = fuelGui
+	local fc = Instance.new("UICorner")
+	fc.CornerRadius = UDim.new(0, 0)
+	fc.Parent = frame
+
+	fuelTitle = Instance.new("TextLabel")
+	fuelTitle.Size = UDim2.new(1, 0, 0, 18)
+	fuelTitle.Position = UDim2.fromOffset(0, 3)
+	fuelTitle.BackgroundTransparency = 1
+	fuelTitle.TextColor3 = Color3.fromRGB(230, 230, 230)
+	fuelTitle.Font = Enum.Font.Code
+	fuelTitle.TextSize = 13
+	fuelTitle.Parent = frame
+
+	local back = Instance.new("Frame")
+	back.Size = UDim2.new(1, -20, 0, 8)
+	back.Position = UDim2.fromOffset(10, 24)
+	back.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+	back.BorderSizePixel = 0
+	back.Parent = frame
+	local bc = Instance.new("UICorner")
+	bc.CornerRadius = UDim.new(0, 0)
+	bc.Parent = back
+
+	fuelFill = Instance.new("Frame")
+	fuelFill.Size = UDim2.fromScale(1, 1)
+	fuelFill.BackgroundColor3 = GREEN
+	fuelFill.BorderSizePixel = 0
+	fuelFill.Parent = back
+	local fl = Instance.new("UICorner")
+	fl.CornerRadius = UDim.new(0, 0)
+	fl.Parent = fuelFill
+end
+
+local function setGauge(rig, f, col)
+	if not rig.needleW then return end
+	rig.needleW.C0 = rig.needleBase * CFrame.Angles(0, 0, math.rad(60 - 120 * f)) * CFrame.new(0, 0.09, 0)
+	rig.led.Color = col
+end
+
+updateFuelUI = function()
+	local f = math.clamp(fuel / CFG.FUEL_MAX, 0, 1)
+	local lowFrac = CFG.FUEL_LOW / CFG.FUEL_MAX
+	local col = f > 0.5 and GREEN or (f > lowFrac and AMBER or RED)
+	fuelFill.Size = UDim2.fromScale(f, 1)
+	fuelFill.BackgroundColor3 = col
+	local tag = ""
+	if f <= 0 then
+		tag = "  -  EMPTY"
+	elseif f <= lowFrac then
+		tag = "  -  LOW"
+	end
+	fuelTitle.Text = string.format("FUEL  %d%%%s", math.floor(f * 100 + 0.5), tag)
+	if activeRig and activeRig.model.Parent then
+		setGauge(activeRig, f, col)
+	end
+end
+
+setFuelHudVisible = function(v)
+	fuelGui.Enabled = v and not CFG.LITE
+	if v then updateFuelUI() end
+end
+
+------------------------------------------------ rig
+local function ropeLayout(rig)
+	local t0 = rig.torso.CFrame
+	local pa = (t0 * CFrame.new(0.3, 0, -1.8)).Position
+	local pb = (t0 * CFrame.new(1.9, -0.7, -0.4)).Position
+	local pc = (t0 * CFrame.new(1.9, -0.7, 0.7)).Position
+	local pd = (rig.root.CFrame * CFrame.new(0.45, -0.1, -0.25)).Position
+	local r = rig.rope
+	for i = 1, r.n do
+		local t = (i - 1) / (r.n - 1)
+		local u = 1 - t
+		local pt = (u * u * u) * pa + (3 * u * u * t) * pb + (3 * u * t * t) * pc + (t * t * t) * pd
+		r.pts[i] = pt
+		r.prev[i] = pt
+	end
+end
+
+local function buildRig(char, torso, r15)
+	local model = Instance.new("Model")
+	model.Name = "FlamethrowerRig"
+	model.Parent = char
+
+	local gun = Instance.new("Model")
+	gun.Name = "Gun"
+	local hoseModel = Instance.new("Model")
+	hoseModel.Name = "Hose"
+
+	------------- back tank (always worn)
+	local root = mkPart(model, "TankRoot", Vector3.new(0.2, 0.2, 0.2), BLACK, Enum.Material.Metal)
+	root.Transparency = 1
+	weldTo(torso, root, TANK_C0)
+	root.CFrame = torso.CFrame * TANK_C0
+
+	local function addT(name, size, color, mat, offset, shape, reflect)
+		local p = mkPart(model, name, size, color, mat, shape)
+		if reflect then p.Reflectance = reflect end
+		weldTo(root, p, offset)
+		p.CFrame = root.CFrame * offset
+		return p
+	end
+	local UP = CFrame.Angles(0, 0, math.rad(90))   -- cylinder axis pointing up
+	local TANKCOL = Color3.fromRGB(24, 24, 27)
+
+	addT("Tank", Vector3.new(1.9, 1.05, 1.05), TANKCOL, Enum.Material.Metal, UP, CYL, 0.16)
+	addT("DomeTop", Vector3.new(1.05, 1.05, 1.05), TANKCOL, Enum.Material.Metal, CFrame.new(0, 0.95, 0), Enum.PartType.Ball, 0.2)
+	addT("DomeBottom", Vector3.new(1.05, 1.05, 1.05), TANKCOL, Enum.Material.Metal, CFrame.new(0, -0.95, 0), Enum.PartType.Ball, 0.2)
+	for i, y in ipairs({ 0.62, 0, -0.62 }) do
+		addT("Band" .. i, Vector3.new(0.26, 1.09, 1.09), TAN, Enum.Material.Metal, CFrame.new(0, y, 0) * UP, CYL, 0.05)
+	end
+	addT("ValveStem", Vector3.new(0.3, 0.26, 0.26), STEEL, Enum.Material.Metal, CFrame.new(0, 1.5, 0) * UP, CYL)
+	addT("ValveWheel", Vector3.new(0.07, 0.62, 0.62), RED, Enum.Material.Metal, CFrame.new(0, 1.68, 0) * UP, CYL)
+	-- fuel port on the right side (the pump nozzle clicks in here)
+	addT("PortCollar", Vector3.new(0.26, 0.36, 0.36), STEEL, Enum.Material.Metal, PORT_LOCAL, CYL)
+	addT("PortLip", Vector3.new(0.07, 0.44, 0.44), BRASS, Enum.Material.Metal, CFrame.new(0.76, 0.55, 0), CYL)
+	-- hose fitting at the front of the tank
+	addT("HoseFit", Vector3.new(0.2, 0.2, 0.2), BRASS, Enum.Material.Metal, CFrame.new(0.45, -0.1, -0.25), Enum.PartType.Ball)
+	-- pressure gauge on the back, needle moves with the fuel level
+	addT("GaugeRim", Vector3.new(0.06, 0.5, 0.5), BRASS, Enum.Material.Metal, CFrame.new(0, 0.25, 0.52) * ZAX, CYL)
+	addT("GaugeFace", Vector3.new(0.04, 0.42, 0.42), Color3.fromRGB(226, 220, 200), Enum.Material.SmoothPlastic, CFrame.new(0, 0.25, 0.555) * ZAX, CYL)
+	addT("GaugeRed", Vector3.new(0.03, 0.07, 0.02), RED, Enum.Material.SmoothPlastic, CFrame.new(-0.15, 0.13, 0.572))
+	local needleBase = CFrame.new(0, 0.25, 0.578)
+	local needle = addT("Needle", Vector3.new(0.025, 0.19, 0.02), Color3.fromRGB(190, 30, 25), Enum.Material.SmoothPlastic, needleBase * CFrame.new(0, 0.09, 0))
+	local needleW = needle:FindFirstChildOfClass("Weld")
+
+	-- harness straps + belt on the torso
+	local function strap(name, size, offset, color, mat)
+		local p = mkPart(model, name, size, color or Color3.fromRGB(34, 30, 26), mat or Enum.Material.Fabric)
+		weldTo(torso, p, offset)
+		p.CFrame = torso.CFrame * offset
+		return p
+	end
+	strap("Belt", Vector3.new(2.12, 0.22, 1.1), CFrame.new(0, -0.5, 0))
+	strap("Buckle", Vector3.new(0.3, 0.26, 0.06), CFrame.new(0, -0.5, -0.56), BRASS, Enum.Material.Metal)
+	for _, sx in ipairs({ -0.55, 0.55 }) do
+		strap("StrapFront", Vector3.new(0.24, 1.5, 0.1), CFrame.new(sx, 0.05, -0.54))
+		strap("StrapBack", Vector3.new(0.24, 1.5, 0.1), CFrame.new(sx, 0.05, 0.54))
+		strap("StrapTop", Vector3.new(0.24, 0.1, 1.1), CFrame.new(sx, 0.83, 0))
+	end
+
+	------------- the gun
+	local body = mkPart(gun, "Body", Vector3.new(0.36, 0.46, 1.3), GUNMETAL, Enum.Material.Metal)
+	body.Anchored = true
+	body.CFrame = torso.CFrame * PIVOT
+
+	local function add(name, size, color, mat, offset, shape, reflect)
+		local p = mkPart(gun, name, size, color, mat, shape)
+		if reflect then p.Reflectance = reflect end
+		weldTo(body, p, offset)
+		p.CFrame = body.CFrame * offset
+		return p
+	end
+
+	add("TopRail", Vector3.new(0.2, 0.08, 1.1), STEEL, Enum.Material.Metal, CFrame.new(0, 0.27, 0))
+	add("Cover", Vector3.new(0.38, 0.28, 0.45), BLACK, Enum.Material.Metal, CFrame.new(0, 0.02, -0.15))
+	add("Stock", Vector3.new(0.3, 0.5, 0.6), WOOD, Enum.Material.Wood, CFrame.new(0, -0.05, 0.95))
+	add("ButtPad", Vector3.new(0.32, 0.54, 0.08), BLACK, Enum.Material.SmoothPlastic, CFrame.new(0, -0.05, 1.29))
+	add("PistolGrip", Vector3.new(0.3, 0.75, 0.36), BLACK, Enum.Material.SmoothPlastic, CFrame.new(0, -0.62, 0.6) * CFrame.Angles(math.rad(-12), 0, 0))
+	add("GuardFront", Vector3.new(0.06, 0.3, 0.06), STEEL, Enum.Material.Metal, CFrame.new(0, -0.4, 0.05))
+	add("GuardBottom", Vector3.new(0.06, 0.06, 0.42), STEEL, Enum.Material.Metal, CFrame.new(0, -0.55, 0.25))
+	add("Trigger", Vector3.new(0.07, 0.2, 0.08), STEEL, Enum.Material.Metal, CFrame.new(0, -0.42, 0.25))
+	add("Foregrip", Vector3.new(0.26, 0.5, 0.26), BLACK, Enum.Material.SmoothPlastic, CFrame.new(0, -0.45, -0.4))
+	-- wooden handguard, long steel wand, igniter, nozzle
+	add("Handguard", Vector3.new(1.0, 0.46, 0.46), WOOD, Enum.Material.Wood, CFrame.new(0, 0, -1.15) * ZAX, CYL)
+	add("GuardRingA", Vector3.new(0.06, 0.5, 0.5), STEEL, Enum.Material.Metal, CFrame.new(0, 0, -0.68) * ZAX, CYL)
+	add("GuardRingB", Vector3.new(0.06, 0.5, 0.5), STEEL, Enum.Material.Metal, CFrame.new(0, 0, -1.62) * ZAX, CYL)
+	add("Wand", Vector3.new(1.45, 0.17, 0.17), STEEL, Enum.Material.Metal, CFrame.new(0, 0, -2.3) * ZAX, CYL, 0.1)
+	for i, z in ipairs({ -1.95, -2.35, -2.7 }) do
+		add("WandRing" .. i, Vector3.new(0.07, 0.26, 0.26), GUNMETAL, Enum.Material.Metal, CFrame.new(0, 0, z) * ZAX, CYL)
+	end
+	add("NozzleHead", Vector3.new(0.4, 0.34, 0.34), GUNMETAL, Enum.Material.Metal, CFrame.new(0, 0, -2.95) * ZAX, CYL)
+	add("NozzleLip", Vector3.new(0.08, 0.42, 0.42), BLACK, Enum.Material.Metal, CFrame.new(0, 0, -3.16) * ZAX, CYL)
+	local glow = add("NozzleGlow", Vector3.new(0.03, 0.28, 0.28), HOT, Enum.Material.Neon, CFrame.new(0, 0, -3.2) * ZAX, CYL)
+	glow.Transparency = 0.9
+	add("Igniter", Vector3.new(0.12, 0.14, 0.45), GUNMETAL, Enum.Material.Metal, CFrame.new(0, 0.2, -2.75))
+	add("HoseFitGun", Vector3.new(0.17, 0.17, 0.17), BRASS, Enum.Material.Metal, CFrame.new(0.27, -0.08, -0.82), Enum.PartType.Ball)
+	local led = add("StatusLED", Vector3.new(0.08, 0.08, 0.08), GREEN, Enum.Material.Neon, CFrame.new(0, 0.32, 0.45), Enum.PartType.Ball)
+
+	-- pilot flame at the igniter
+	local pilot = add("Pilot", Vector3.new(0.08, 0.08, 0.08), Color3.fromRGB(255, 190, 70), Enum.Material.Neon, CFrame.new(0, 0.27, -3.0), Enum.PartType.Ball)
+	local pAtt = Instance.new("Attachment")
+	pAtt.Parent = pilot
+	local pe = Instance.new("ParticleEmitter")
+	pe.Texture = "rbxasset://textures/particles/fire_main.dds"
+	pe.Rate = 14
+	pe.Lifetime = NumberRange.new(0.2, 0.35)
+	pe.Speed = NumberRange.new(0.5, 1.2)
+	pe.SpreadAngle = Vector2.new(15, 15)
+	pe.LightEmission = 1
+	pe.Acceleration = Vector3.new(0, 3, 0)
+	pe.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.22), NumberSequenceKeypoint.new(1, 0.02) })
+	pe.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.1), NumberSequenceKeypoint.new(1, 1) })
+	pe.Color = ColorSequence.new(Color3.fromRGB(255, 200, 90), Color3.fromRGB(255, 80, 10))
+	pe.Parent = pAtt
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 150, 60)
+	light.Range = 7
+	light.Brightness = 1
+	light.Parent = pilot
+
+	local muzzle = add("Muzzle", Vector3.new(0.1, 0.1, 0.1), Color3.new(1, 1, 1), Enum.Material.SmoothPlastic, CFrame.new(0, 0, -3.3))
+	muzzle.Transparency = 1
+	local fx = buildFlameFX(muzzle)
+
+	------------- hose: gun -> tank, a real rope that sags and swings
+	local HOSE_N = 18
+	local hoseCol = Color3.fromRGB(62, 58, 50)
+	local segs = ropeMakeSegments(hoseModel, HOSE_N - 1, 0.1, hoseCol, Enum.Material.Fabric)
+	local ends = {}
+	for i = 1, 2 do
+		local f = mkPart(hoseModel, "HoseEnd" .. i, Vector3.new(0.24, 0.16, 0.16), BRASS, Enum.Material.Metal, CYL)
+		f.Anchored = true
+		ends[i] = f
+	end
+
+	local rig = {
+		model = model, gun = gun, hoseModel = hoseModel, body = body, root = root, torso = torso, r15 = r15,
+		orient = CFrame.identity, rope = newRope(HOSE_N), segs = segs, ends = ends, hoseLen = 6.2,
+		light = light, led = led, glow = glow, muzzle = muzzle, fx = fx,
+		needleW = needleW, needleBase = needleBase, equipped = false, firing = false,
+	}
+	ropeLayout(rig)
+	return rig
+end
+
+CFG.liteRig = function(char, torso, r15)
+	local model = Instance.new("Model")
+	model.Name = "FlamethrowerRig"
+	model.Parent = char
+	return {
+		model = model, gun = Instance.new("Model"), hoseModel = Instance.new("Model"),
+		torso = torso, root = torso, r15 = r15, orient = CFrame.identity,
+		equipped = false, firing = false, lite = true,
+	}
+end
+
+local function setEquipped(rig, on)
+	if rig.equipped == on then return end
+	rig.equipped = on
+	if on then
+		ropeLayout(rig)
+		if not rig.storeMode then rig.gun.Parent = rig.model end
+		rig.hoseModel.Parent = rig.model
+	else
+		rig.firing = false
+		if rig.fx then setFiring(rig.fx, false) end
+		rig.gun.Parent = nil
+		rig.hoseModel.Parent = nil
+	end
+end
+
+local function finiteCF(cf)
+	local p = cf.Position
+	return p.X == p.X and p.Y == p.Y and p.Z == p.Z and math.abs(p.X) < 1e5 and math.abs(p.Y) < 1e5 and math.abs(p.Z) < 1e5
+end
+
+-- two-bone IK: puts the hand of one R15 arm on a target point
+local function solveArm(char, torso, side, target, hintLocal, handRot)
+	local upper = char:FindFirstChild(side .. "UpperArm")
+	local lower = char:FindFirstChild(side .. "LowerArm")
+	local hand = char:FindFirstChild(side .. "Hand")
+	if not (upper and lower and hand) then return end
+	local shoulder = upper:FindFirstChild(side .. "Shoulder")
+	local elbow = lower:FindFirstChild(side .. "Elbow")
+	local wrist = hand:FindFirstChild(side .. "Wrist")
+	if not (shoulder and elbow) then return end
+
+	local C0s, C1s = shoulder.C0, shoulder.C1
+	local S = (torso.CFrame * C0s).Position
+	local L1 = (elbow.C0.Position - C1s.Position).Magnitude
+	local L2 = wrist and (wrist.C0.Position - elbow.C1.Position).Magnitude or 1.1
+	if L1 < 0.1 or L2 < 0.1 then return end
+
+	local toS = S - target
+	if toS.Magnitude > 0.01 then
+		target = target + toS.Unit * 0.2
+	end
+
+	local toT = target - S
+	if toT.Magnitude < 0.05 then return end
+	local dir = toT.Unit
+	local d = math.clamp(toT.Magnitude, 0.2, (L1 + L2) * 0.999)
+	local a = (L1 * L1 - L2 * L2 + d * d) / (2 * d)
+	local h = math.sqrt(math.max(L1 * L1 - a * a, 0))
+
+	local hint = torso.CFrame:VectorToWorldSpace(hintLocal)
+	local pole = hint - dir * hint:Dot(dir)
+	if pole.Magnitude < 1e-3 then
+		pole = torso.CFrame.RightVector * (side == "Left" and -1 or 1)
+	end
+	pole = pole.Unit
+
+	local E = S + dir * a + pole * h
+	local W = S + dir * d
+	local n = dir:Cross(pole).Unit
+
+	local yUp = (S - E).Unit
+	local R1 = CFrame.fromMatrix(Vector3.zero, n, yUp)
+	local D1 = CFrame.new(S - R1:VectorToWorldSpace(C1s.Position)) * R1
+	local T1 = (torso.CFrame * C0s):Inverse() * D1 * C1s
+	if not finiteCF(T1) then return end
+	shoulder.Transform = T1
+
+	local y2 = (E - W).Unit
+	local R2 = CFrame.fromMatrix(Vector3.zero, n, y2)
+	local D2 = CFrame.new(E - R2:VectorToWorldSpace(elbow.C1.Position)) * R2
+	local T2 = (D1 * elbow.C0):Inverse() * D2 * elbow.C1
+	if finiteCF(T2) then elbow.Transform = T2 end
+	if wrist then
+		wrist.Transform = CFrame.identity
+		if handRot then
+			-- turn the hand to an exact world rotation (the tool follows the hand)
+			local D3 = CFrame.new(W - handRot:VectorToWorldSpace(wrist.C1.Position)) * handRot
+			local T3 = (D2 * wrist.C0):Inverse() * D3 * wrist.C1
+			if finiteCF(T3) then wrist.Transform = T3 end
+		end
+	end
+end
+
+-- R6 arms are single rigid blocks: just point the arm at the target
+local function solveArmR6(char, torso, side, target)
+	local arm = char:FindFirstChild(side .. " Arm")
+	local shoulder = torso:FindFirstChild(side .. " Shoulder")
+	if not (arm and shoulder) then return end
+	local C0, C1 = shoulder.C0, shoulder.C1
+	local S = (torso.CFrame * C0).Position
+	local to = target - S
+	if to.Magnitude < 0.05 then return end
+	local up = -to.Unit
+	local right = torso.CFrame.UpVector:Cross(up)
+	if right.Magnitude < 0.05 then
+		right = torso.CFrame.RightVector
+	else
+		right = right.Unit
+	end
+	-- arm centre sits 0.5 off the joint; swing it toward the middle of the body
+	if right:Dot(torso.CFrame.RightVector) > 0 then right = -right end
+	local R = CFrame.fromMatrix(Vector3.zero, right, up)
+	local D = CFrame.new(S - R:VectorToWorldSpace(C1.Position)) * R
+	local T = (torso.CFrame * C0):Inverse() * D * C1
+	local p = T.Position
+	if p.X == p.X and p.Y == p.Y and p.Z == p.Z then
+		shoulder.Transform = T
+	end
+end
+
+-- keeps the gun hose out of your body (torso seen from above is roughly an ellipse)
+local function hoseCollide(tcf)
+	return function(pts, n)
+		for i = 2, n - 1 do
+			local l = tcf:PointToObjectSpace(pts[i])
+			if l.Y < 1.0 and l.Y > -1.6 then
+				local ex, ez = l.X / 1.3, l.Z / 0.85
+				local r = math.sqrt(ex * ex + ez * ez)
+				if r < 1 then
+					if r < 0.05 then ex, ez, r = 1, 0, 1 end
+					pts[i] = tcf:PointToWorldSpace(Vector3.new(ex / r * 1.3, l.Y, ez / r * 0.85))
+				end
+			end
+		end
+	end
+end
+
+-- puts both hands on the weapon. Runs every frame from several events so the default
+-- animations can't pull the arms back down.
+local function applyArms(rig)
+	local char = getChar()
+	local torso = rig.torso
+	if not char or not torso.Parent or not rig.equipped then return end
+
+	if rig.storeMode then
+		-- right arm: straight out from the shoulder in a fixed stance, the tool follows the hand
+		if CFG.HOLD_AT_SHOULDER then
+			local ref = stanceRef(torso)
+			local aim = ref * rig.orient
+			local rsh
+			if rig.r15 then
+				local up = char:FindFirstChild("RightUpperArm")
+				rsh = up and up:FindFirstChild("RightShoulder")
+			else
+				rsh = torso:FindFirstChild("Right Shoulder")
+			end
+			if rsh then
+				local S = (ref * CFrame.new(rsh.C0.Position)).Position
+				local fwd = aim.LookVector
+				if rig.r15 then
+					local handRot = (aim * CFrame.Angles(math.rad(90), 0, 0)).Rotation
+					solveArm(char, torso, "Right", S + fwd * 1.75, Vector3.new(0.5, -1, 0.2), handRot)
+				else
+					solveArmR6(char, torso, "Right", S + fwd * 2)
+				end
+			end
+		end
+		-- the left hand grabs the front half
+		if not (CFG.TWO_HANDS and rig.tool) then return end
+		local h = rig.handle
+		local tip = muzzlePoint(rig.tool)
+		if not h or not h.Parent or not tip then return end
+		local sh
+		if rig.r15 then
+			local up = char:FindFirstChild("LeftUpperArm")
+			sh = up and up:FindFirstChild("LeftShoulder")
+		else
+			sh = torso:FindFirstChild("Left Shoulder")
+		end
+		if not sh then return end
+		local shoulderPos = (torso.CFrame * sh.C0).Position
+		local reach = rig.r15 and 1.85 or 1.45
+		local from = h.Position
+		local target = from:Lerp(tip, 0.2)
+		for t = 0.8, 0.2, -0.1 do
+			local p = from:Lerp(tip, t)
+			if (p - shoulderPos).Magnitude <= reach then
+				target = p
+				break
+			end
+		end
+		target -= torso.CFrame.UpVector * 0.2
+		if rig.r15 then
+			solveArm(char, torso, "Left", target, Vector3.new(-0.5, -1, 0.2))
+		else
+			solveArmR6(char, torso, "Left", target)
+		end
+		return
+	end
+
+	local gunCF = stanceRef(torso) * fitMove() * PIVOT * rig.orient * fitRot() * CFrame.new(0, 0, rig.r15 and -1.5 or -1.2)
+	local rGrip = (gunCF * CFrame.new(0, -0.7, 0.6)).Position
+	local lGrip = (gunCF * CFrame.new(0, -0.5, -0.4)).Position
+	if rig.r15 then
+		solveArm(char, torso, "Right", rGrip, Vector3.new(0.5, -1, 0.2))
+		solveArm(char, torso, "Left", lGrip, Vector3.new(-0.5, -1, 0.2))
+	else
+		solveArmR6(char, torso, "Right", rGrip)
+		solveArmR6(char, torso, "Left", lGrip)
+	end
+end
+
+local function updateRig(rig)
+	local char = getChar()
+	if not char or not rig.model.Parent or not rig.equipped then return end
+	local torso = rig.torso
+	if not torso.Parent then return end
+
+	if rig.storeMode then
+		-- store model is held by its own Handle/Grip; we only drive the hose from it to the tank
+		applyGripFit()
+		do
+			local sref = stanceRef(torso)
+			updateOrient(rig, sref, (sref * CFrame.new(0.5, 0.6, 0)).Position)
+		end
+		local h = rig.handle
+		if not h or not h.Parent then return end
+		do
+			local A = (h.CFrame * CFrame.new(0, -0.2, 0)).Position
+			local B = (rig.root.CFrame * CFrame.new(0.45, -0.1, -0.25)).Position
+			ropeStep(rig.rope, A, B, rig.hoseLen, hoseCollide(torso.CFrame))
+			ropeRender(rig.rope, rig.segs, 0.1)
+			rig.ends[1].CFrame = CFrame.lookAt(A, rig.rope.pts[2]) * ZAX
+			rig.ends[2].CFrame = CFrame.lookAt(B, rig.rope.pts[rig.rope.n - 1]) * ZAX
+		end
+
+		applyArms(rig)
+		return
+	end
+
+	local tcf = stanceRef(torso)
+	local pivotCF = tcf * fitMove() * PIVOT
+	updateOrient(rig, tcf, pivotCF.Position)
+	local gunCF = pivotCF * rig.orient * fitRot() * CFrame.new(0, 0, rig.r15 and -1.5 or -1.2)
+	rig.body.CFrame = gunCF
+
+	-- flame leaves the muzzle toward the crosshair
+	local mpos = (gunCF * CFrame.new(0, 0, -3.3)).Position
+	if rig.firing then
+		local fd = getAimDir(mpos) or gunCF.LookVector
+		rig.fx.att.WorldCFrame = CFrame.lookAt(mpos, mpos + fd)
+		rig.glow.Transparency = 0.1 + math.random() * 0.15
+	else
+		rig.glow.Transparency = 0.9
+	end
+
+	-- hose: right side of the handguard, round your right side, into the tank
+	do
+		local A = (gunCF * CFrame.new(0.27, -0.08, -0.82)).Position
+		local B = (rig.root.CFrame * CFrame.new(0.45, -0.1, -0.25)).Position
+		ropeStep(rig.rope, A, B, rig.hoseLen, hoseCollide(tcf))
+		ropeRender(rig.rope, rig.segs, 0.1)
+		rig.ends[1].CFrame = CFrame.lookAt(A, rig.rope.pts[2]) * ZAX
+		rig.ends[2].CFrame = CFrame.lookAt(B, rig.rope.pts[rig.rope.n - 1]) * ZAX
+	end
+
+	applyArms(rig)
+
+	rig.light.Brightness = (rig.firing and 1.6 or 1) + math.random() * 0.6
+end
+
+------------------------------------------------------------------ FIRING
+local lastGroundFire = 0
+local function sprayFlame(tool)
+	local napalm = CFG.NAPALM
+	local char = getChar()
+	local origin = muzzlePoint(tool)
+	if not origin or not char then return end
+	local handle = getHandle(tool)
+	local dir = getAimDir(origin) or (handle and handle.CFrame.LookVector) or Vector3.zAxis
+
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = ignoreList()
+
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = ignoreList()
+
+	-- fire on whatever surface the stream reaches (leaves burning patches and scorch marks)
+	local hit = Workspace:Raycast(origin, dir * CFG.RANGE * 0.95, rayParams)
+	if hit then
+		local m = hit.Instance:FindFirstAncestorOfClass("Model")
+		if not (m and m:FindFirstChildOfClass("Humanoid")) then
+			local now = os.clock()
+			if now - lastGroundFire > (napalm and 0.18 or 0.3) then
+				lastGroundFire = now
+				local pos = hit.Position
+				if hit.Normal.Y > 0.7 then
+					pos += Vector3.new(math.random() - 0.5, 0, math.random() - 0.5) * 1.6
+				end
+				groundFire(pos, hit.Normal, napalm)
+			end
+		end
+	end
+
+	local half = CFG.RANGE / 2
+	local parts = Workspace:GetPartBoundsInRadius(origin + dir * half, half, params)
+	local done = {}
+
+	for _, part in ipairs(parts) do
+		local model = part:FindFirstAncestorOfClass("Model")
+		if model and not done[model] and not Players:GetPlayerFromCharacter(model) then
+			local hum = model:FindFirstChildOfClass("Humanoid")
+			if hum and hum.Health > 0 then
+				local to = part.Position - origin
+				if to.Magnitude > 0.1 then
+					local angle = math.deg(math.acos(math.clamp(dir:Dot(to.Unit), -1, 1)))
+					if angle <= CFG.CONE_ANGLE then
+						local h = Workspace:Raycast(origin, to, rayParams)
+						if not h or h.Instance:IsDescendantOf(model) then
+							done[model] = true
+							ignite(model, hum, napalm)
+							-- napalm sticks: a burning puddle under whoever it hits
+							if napalm then
+								local t = os.clock()
+								if t - CFG.lastDrop > 0.35 then
+									CFG.lastDrop = t
+									local rp = model:FindFirstChild("HumanoidRootPart")
+									if rp then
+										local g, n = groundAt(rp.Position, { fxFolder, model, char })
+										groundFire(g + n * 0.03, n, true)
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+------------------------------------------------------------------ BEGGING SCENE
+-- Hold the crosshair on an NPC: he freezes, turns to you, drops to his knees and begs (your emote),
+-- the screen goes cinematic, and you decide: shoot, or look away and he runs off.
+if not CFG.LITE then
+	local B = CFG.BEG or {}
+	if B then
+		local TweenService = game:GetService("TweenService")
+		local Lighting = game:GetService("Lighting")
+		local SoundService = game:GetService("SoundService")
+
+		local BAR = 0.115
+		local RANGE = B.RANGE or 35
+		local AIM_TIME = B.AIM_TIME or 0.35
+		local MERCY = B.MERCY_TIME or 1.1
+		local LINES = B.LINES or { "Please don't!" }
+		local SPARED = B.SPARED_LINES or { "Thank you!" }
+
+		local scene = nil        -- the NPC who is begging right now
+		local aimModel, aimTime = nil, 0
+		local cooldown = setmetatable({}, { __mode = "k" })
+		local poseLock = setmetatable({}, { __mode = "k" })   -- NPCs whose pose is being driven by the begging scene
+		CFG.isPosed = function(m) return poseLock[m] or (scene and scene.model == m) end
+		local walk = setmetatable({}, { __mode = "k" })
+		local cinemaOn = false
+		local baseFov = nil
+		local outAt = 0
+		local shakeT = 0
+
+		local function tw(obj, t, props, style)
+			TweenService:Create(obj, TweenInfo.new(t, style or Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), props):Play()
+		end
+
+		---------------------------------------------------------------- cinematic overlay
+		local cg = Instance.new("ScreenGui")
+		cg.Name = "BegCinema"
+		cg.IgnoreGuiInset = true
+		cg.ResetOnSpawn = false
+		cg.DisplayOrder = 50
+		cg.Parent = player:WaitForChild("PlayerGui")
+
+		local vig = Instance.new("CanvasGroup")
+		vig.Size = UDim2.fromScale(1, 1)
+		vig.BackgroundTransparency = 1
+		vig.GroupTransparency = 1
+		vig.Parent = cg
+		local function edge(size, pos, anchor, rot)
+			local f = Instance.new("Frame")
+			f.BackgroundColor3 = Color3.new(0, 0, 0)
+			f.BorderSizePixel = 0
+			f.Size, f.Position, f.AnchorPoint = size, pos, anchor
+			local g = Instance.new("UIGradient")
+			g.Rotation = rot
+			g.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.62), NumberSequenceKeypoint.new(1, 1),
+			})
+			g.Parent = f
+			f.Parent = vig
+		end
+		edge(UDim2.fromScale(0.3, 1), UDim2.fromScale(0, 0), Vector2.new(0, 0), 0)
+		edge(UDim2.fromScale(0.3, 1), UDim2.fromScale(1, 0), Vector2.new(1, 0), 180)
+		edge(UDim2.fromScale(1, 0.3), UDim2.fromScale(0, 0), Vector2.new(0, 0), 90)
+		edge(UDim2.fromScale(1, 0.3), UDim2.fromScale(0, 1), Vector2.new(0, 1), -90)
+
+		local function bar(anchorY)
+			local f = Instance.new("Frame")
+			f.BackgroundColor3 = Color3.new(0, 0, 0)
+			f.BorderSizePixel = 0
+			f.AnchorPoint = Vector2.new(0, anchorY)
+			f.Position = UDim2.fromScale(0, anchorY)
+			f.Size = UDim2.fromScale(1, 0)
+			f.Parent = cg
+			return f
+		end
+		local topBar, botBar = bar(0), bar(1)
+
+		local sub = Instance.new("TextLabel")
+		sub.BackgroundTransparency = 1
+		sub.Size = UDim2.fromScale(1, 1)
+		sub.Font = Enum.Font.Garamond
+		sub.TextScaled = true
+		sub.TextColor3 = Color3.fromRGB(240, 232, 220)
+		sub.TextStrokeColor3 = Color3.new(0, 0, 0)
+		sub.TextTransparency = 1
+		sub.TextStrokeTransparency = 1
+		sub.Text = ""
+		local sp = Instance.new("UIPadding")
+		sp.PaddingTop, sp.PaddingBottom = UDim.new(0.18, 0), UDim.new(0.18, 0)
+		sp.Parent = sub
+		sub.Parent = botBar
+
+		local flash = Instance.new("Frame")
+		flash.Size = UDim2.fromScale(1, 1)
+		flash.BackgroundColor3 = Color3.fromRGB(255, 190, 110)
+		flash.BackgroundTransparency = 1
+		flash.BorderSizePixel = 0
+		flash.Parent = cg
+
+		for _, n in ipairs({ "BegGrade", "BegFocus" }) do
+			local old = Lighting:FindFirstChild(n)
+			if old then old:Destroy() end
+		end
+		local grade = Instance.new("ColorCorrectionEffect")
+		grade.Name = "BegGrade"
+		grade.Enabled = false
+		grade.Parent = Lighting
+		local dof = Instance.new("DepthOfFieldEffect")
+		dof.Name = "BegFocus"
+		dof.Enabled = false
+		dof.InFocusRadius = 12
+		dof.NearIntensity, dof.FarIntensity = 0, 0
+		dof.Parent = Lighting
+
+		local subTok = 0
+		local function subtitle(text)
+			subTok += 1
+			local tok = subTok
+			if B.CINEMATIC == false then return end
+			if not text then
+				tw(sub, 0.3, { TextTransparency = 1, TextStrokeTransparency = 1 })
+				return
+			end
+			sub.Text = "\"" .. text .. "\""
+			sub.TextTransparency, sub.TextStrokeTransparency = 1, 1
+			tw(sub, 0.25, { TextTransparency = 0, TextStrokeTransparency = 0.6 })
+			task.delay(1.7, function()
+				if tok == subTok then tw(sub, 0.3, { TextTransparency = 1, TextStrokeTransparency = 1 }) end
+			end)
+		end
+
+		local function cinemaIn()
+			if B.CINEMATIC == false or cinemaOn then return end
+			cinemaOn = true
+			tw(topBar, 0.9, { Size = UDim2.fromScale(1, BAR) })
+			tw(botBar, 0.9, { Size = UDim2.fromScale(1, BAR) })
+			tw(vig, 1.2, { GroupTransparency = 0 })
+			grade.Enabled = true
+			tw(grade, 1.4, {
+				Saturation = -0.15, Contrast = 0.08, Brightness = 0,
+				TintColor = Color3.fromRGB(255, 243, 230),
+			})
+			dof.Enabled = true
+			tw(dof, 1.4, { FarIntensity = 0.35, NearIntensity = 0 })
+			local cam = Workspace.CurrentCamera
+			if cam then
+				if not baseFov then baseFov = cam.FieldOfView end
+				tw(cam, 7, { FieldOfView = baseFov - 16 }, Enum.EasingStyle.Quad)
+			end
+		end
+
+		local function cinemaOut()
+			if not cinemaOn then return end
+			cinemaOn = false
+			subtitle(nil)
+			tw(topBar, 0.4, { Size = UDim2.fromScale(1, 0) })
+			tw(botBar, 0.4, { Size = UDim2.fromScale(1, 0) })
+			tw(vig, 0.4, { GroupTransparency = 1 })
+			tw(grade, 0.4, {
+				Saturation = 0, Contrast = 0, Brightness = 0, TintColor = Color3.new(1, 1, 1),
+			})
+			tw(dof, 0.4, { FarIntensity = 0, NearIntensity = 0 })
+			local cam = Workspace.CurrentCamera
+			if cam and baseFov then tw(cam, 0.4, { FieldOfView = baseFov }) end
+			outAt = os.clock()
+			task.delay(1, function()
+				if cinemaOn then return end
+				grade.Enabled = false
+				dof.Enabled = false
+				local c = Workspace.CurrentCamera
+				if c and baseFov then c.FieldOfView = baseFov end
+				baseFov = nil
+			end)
+		end
+
+		---------------------------------------------------------------- kneeling pose (used if the emote can't load)
+		local function joints(model)
+			local j = {}
+			local function f(name) j[name] = model:FindFirstChild(name, true) end
+			for _, n in ipairs({ "RootJoint", "Waist", "Neck", "RightHip", "LeftHip", "RightKnee", "LeftKnee", "RightShoulder", "LeftShoulder", "RightElbow", "LeftElbow", "Right Shoulder", "Left Shoulder", "Right Hip", "Left Hip" }) do
+				f(n)
+			end
+			return j
+		end
+		-- every pose we set is remembered and pushed again right before each frame is drawn, so the
+		-- avatar's own animator can never wipe it out (this was why he stayed in a T-pose)
+		local lastT = setmetatable({}, { __mode = "k" })
+		local function setT(j, name, cf)
+			local m = j[name]
+			if m and m:IsA("Motor6D") then
+				m.Transform = cf
+				lastT[m] = cf
+			end
+		end
+		local function resetPose(j)
+			for name, m in pairs(j) do
+				if m and m.Parent and m:IsA("Motor6D") then
+					m.Transform = CFrame.identity
+					lastT[m] = nil
+				end
+			end
+		end
+		local function reapplyPoses()
+			for m, cf in pairs(lastT) do
+				if m.Parent then m.Transform = cf else lastT[m] = nil end
+			end
+		end
+		RunService.RenderStepped:Connect(reapplyPoses)
+		RunService.Stepped:Connect(reapplyPoses)
+		pcall(function() RunService.PreAnimation:Connect(reapplyPoses) end)
+		-- built-in begging animation, copied from your "Praying" emote video: hands clasped at the chest,
+		-- elbows tucked, hunched, head tilted up, rocking and trembling. Optional KNEEL drops him to his knees too (R15 avatars)
+		local function kneelPose(s, t, force)
+			if not (s.r15 or s.r6) then return end
+			local e = force or math.clamp(t / 0.7, 0, 1)
+			e = e * e * (3 - 2 * e)
+			local rock = math.sin(t * 2.2)
+			local bob = math.sin(t * 4.4)
+			local tr = math.sin(t * 27) * 0.012 * e
+			local sob = math.sin(t * 19) * 0.012 * e
+			local j = s.joints
+			if s.r6 then
+				-- R6 has no elbows: both arms come up in front, hands pressed together, pleading
+				local sw = (1.2 + 0.12 * bob) * e
+				setT(j, "Right Shoulder", CFrame.Angles(0, 0, sw + tr) * CFrame.Angles(0.33 * e, 0, 0))
+				setT(j, "Left Shoulder", CFrame.Angles(0, 0, -(sw - tr)) * CFrame.Angles(0.33 * e, 0, 0))
+				setT(j, "Neck", CFrame.Angles(-(0.16 + 0.04 * rock) * e, math.sin(t * 1.7) * 0.1 * e, 0))
+				setT(j, "RootJoint", CFrame.Angles(-(0.06 + 0.03 * rock) * e + sob, 0, 0))
+				setT(j, "Right Hip", CFrame.Angles(0, 0, 0.05 * e))
+				setT(j, "Left Hip", CFrame.Angles(0, 0, -0.05 * e))
+				return
+			end
+			if B.KNEEL == true then
+				setT(j, "RootJoint", CFrame.new(0, -(s.drop or 0.95) * e, 0))
+				setT(j, "RightHip", CFrame.Angles(0.1 * e, 0, 0))
+				setT(j, "LeftHip", CFrame.Angles(0.1 * e, 0, 0))
+				setT(j, "RightKnee", CFrame.Angles(-1.5 * e, 0, 0))
+				setT(j, "LeftKnee", CFrame.Angles(-1.5 * e, 0, 0))
+			else
+				-- standing: knees a little bent, feet together, like the emote
+				setT(j, "RightHip", CFrame.Angles(0.08 * e, 0, 0.05 * e))
+				setT(j, "LeftHip", CFrame.Angles(0.08 * e, 0, -0.05 * e))
+				setT(j, "RightKnee", CFrame.Angles(-0.16 * e, 0, 0))
+				setT(j, "LeftKnee", CFrame.Angles(-0.16 * e, 0, 0))
+			end
+			setT(j, "Waist", CFrame.Angles((-0.14 - 0.05 * rock) * e + sob, 0, 0))
+			setT(j, "Neck", CFrame.Angles((0.14 + 0.04 * rock) * e, 0, math.sin(t * 1.7) * 0.1 * e))
+			-- upper arms down and forward, tucked in; forearms folded up across the chest so the hands meet
+			setT(j, "RightShoulder", CFrame.Angles(0.38 * e + tr, 0, -0.3 * e))
+			setT(j, "LeftShoulder", CFrame.Angles(0.38 * e - tr, 0, 0.3 * e))
+			setT(j, "RightElbow", CFrame.Angles((1.75 + 0.1 * bob) * e + tr, -0.35 * e, 0))
+			setT(j, "LeftElbow", CFrame.Angles((1.75 + 0.1 * bob) * e - tr, 0.35 * e, 0))
+		end
+
+		---------------------------------------------------------------- scene control
+		local function targetUnder()
+			local cam = Workspace.CurrentCamera
+			if not cam then return nil end
+			local vp
+			if (shiftLockOn and not menuFree) or (UserInputService.TouchEnabled and not UserInputService.MouseEnabled) then
+				vp = cam.ViewportSize / 2
+			else
+				vp = UserInputService:GetMouseLocation()
+			end
+			local ray = cam:ViewportPointToRay(vp.X, vp.Y)
+			local rp = RaycastParams.new()
+			rp.FilterType = Enum.RaycastFilterType.Exclude
+			rp.FilterDescendantsInstances = ignoreList()
+			local r = Workspace:Spherecast(ray.Origin, 1.1, ray.Direction * (RANGE + 30), rp)
+			if not r then return nil end
+			local m = r.Instance:FindFirstAncestorOfClass("Model")
+			if not m or Players:GetPlayerFromCharacter(m) then return nil end
+			local hum = m:FindFirstChildOfClass("Humanoid")
+			local root = m:FindFirstChild("HumanoidRootPart")
+			if not hum or not root or hum.Health <= 0 or burning[m] or ragdollData[m] then return nil end
+			local mine = getRoot()
+			if not mine or (mine.Position - root.Position).Magnitude > RANGE then return nil end
+			return m, hum, root
+		end
+
+		local function release(s, why)
+			pcall(function() if s.track then s.track:Stop(0.25) end end)
+			if why == "spared" and not s.track then
+				poseLock[s.model] = true
+				task.spawn(function()
+					local t0 = os.clock()
+					while s.model.Parent do
+						local k = (os.clock() - t0) / 0.5
+						if k >= 1 then break end
+						kneelPose(s, 99, 1 - k)
+						RunService.Heartbeat:Wait()
+					end
+					resetPose(s.joints)
+					poseLock[s.model] = nil
+				end)
+			else
+				resetPose(s.joints)
+			end
+			if s.hum.Parent then
+				s.hum.AutoRotate = true
+				if why ~= "fired" then s.hum.WalkSpeed = s.oldSpeed end
+			end
+			if s.tension then
+				local t = s.tension
+				tw(t, 0.6, { Volume = 0 })
+				Debris:AddItem(t, 1)
+			end
+		end
+
+		-- how far the body has to sink so the knees touch the ground (measured, not guessed)
+		local function kneelDrop(model, root)
+			local knee = model:FindFirstChild("RightKnee", true)
+			local shin = model:FindFirstChild("RightLowerLeg")
+			if not (knee and knee:IsA("Motor6D") and knee.Part0 and shin) then return 0.95 end
+			local kneeY = (knee.Part0.CFrame * knee.C0).Position.Y
+			local rp = RaycastParams.new()
+			rp.FilterType = Enum.RaycastFilterType.Exclude
+			local list = ignoreList()
+			table.insert(list, model)
+			rp.FilterDescendantsInstances = list
+			local r = Workspace:Raycast(root.Position, Vector3.new(0, -14, 0), rp)
+			local gy = r and r.Position.Y or (root.Position.Y - 3)
+			return math.clamp(kneeY - gy - math.min(shin.Size.X, shin.Size.Z) * 0.5, 0.3, 3)
+		end
+
+		local function startScene(model, hum, root)
+			local animator = hum:FindFirstChildOfClass("Animator")
+			if not animator then
+				animator = Instance.new("Animator")
+				animator.Parent = hum
+			end
+			local rt = hum.RigType == Enum.HumanoidRigType.R15 and "R15" or "R6"
+			print("[Flamethrower] begging scene started on a " .. rt .. " NPC")
+			local s = {
+				model = model, hum = hum, root = root, start = os.clock(), nextLine = 0, line = 0,
+				oldSpeed = hum.WalkSpeed, joints = joints(model), r15 = model:FindFirstChild("UpperTorso") ~= nil, r6 = model:FindFirstChild("UpperTorso") == nil and model:FindFirstChild("Torso") ~= nil, drop = kneelDrop(model, root),
+			}
+			hum.WalkSpeed = 0
+			hum.AutoRotate = false
+			hum:Move(Vector3.zero)
+
+			if B.ANIM and tostring(B.ANIM) ~= "" then
+				local a = Instance.new("Animation")
+				a.AnimationId = "rbxassetid://" .. tostring(B.ANIM)
+				local ok, track = pcall(function() return animator:LoadAnimation(a) end)
+				if ok and track then
+					track.Looped = true
+					track.Priority = Enum.AnimationPriority.Action4
+					track:Play(0.35)
+					s.track = track
+				end
+			end
+			s.tension = playSoundAt(SoundService, CFG.SOUNDS.BEG_TENSION, { Looped = true, Volume = 0.55 })
+			scene = s
+			cinemaIn()
+		end
+
+		local function endScene(why)
+			local s = scene
+			if not s then return end
+			scene = nil
+			release(s, why)
+			cooldown[s.model] = os.clock() + 1.5
+			subtitle(nil)
+			cinemaOut()   -- the dark look is only there while you aim at him
+			if why == "fired" then
+				shakeT = 0.6
+				flash.BackgroundTransparency = 0.35
+				tw(flash, 0.5, { BackgroundTransparency = 1 })
+			elseif why == "spared" then
+				say(s.model, SPARED[math.random(1, #SPARED)])
+				-- he scrambles away from you
+				local mine = getRoot()
+				if s.hum.Parent and mine then
+					local away = s.root.Position - mine.Position
+					away = Vector3.new(away.X, 0, away.Z)
+					away = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
+					s.hum.WalkSpeed = 20
+					s.hum:MoveTo(s.root.Position + away * 45)
+					task.delay(3.5, function()
+						if s.hum.Parent and not burning[s.model] then s.hum.WalkSpeed = s.oldSpeed end
+					end)
+				end
+			end
+		end
+
+		-- walking / running / burning-panic animation for spawned NPCs (they have no animation scripts, so they would glide)
+		RunService.Heartbeat:Connect(function(dt)
+			local now = os.clock()
+			for _, m in ipairs(spawned) do
+				local hum = m.Parent and m:FindFirstChildOfClass("Humanoid")
+				local root = m:FindFirstChild("HumanoidRootPart")
+				if hum and root and (m:FindFirstChild("UpperTorso") or m:FindFirstChild("Torso")) and hum.Health > 0 and not ragdollData[m]
+					and not poseLock[m] and not CFG.animActive[m] and not (scene and scene.model == m) then
+					local w = walk[m]
+					if not w then
+						w = { phase = 0, amp = 0, joints = joints(m), r6 = m:FindFirstChild("UpperTorso") == nil }
+						walk[m] = w
+					end
+					local v = root.AssemblyLinearVelocity
+					local sp = Vector3.new(v.X, 0, v.Z).Magnitude
+					local moving = sp > 1.5
+					w.amp += ((moving and 1 or 0) - w.amp) * math.min(dt * 10, 1)
+					w.phase += dt * math.clamp(sp, 0, 24) * 0.55
+					if w.amp < 0.02 and not burning[m] then
+						if not w.idle then
+							resetPose(w.joints)
+							w.idle = true
+						end
+					else
+						w.idle = false
+						local a = w.amp * math.clamp(0.35 + sp / 30, 0.35, 0.95)
+						local ph = w.phase
+						local sR, sL = math.sin(ph), math.sin(ph + math.pi)
+						local j = w.joints
+						if w.r6 then
+							-- R6: legs and arms swing about the joint's own Z axis (right side = forward, left side = mirrored)
+							setT(j, "Right Hip", CFrame.Angles(0, 0, sR * a * 1.1))
+							setT(j, "Left Hip", CFrame.Angles(0, 0, -sL * a * 1.1))
+							if burning[m] then
+								local fl = math.sin(now * 14) * 0.35
+								setT(j, "Right Shoulder", CFrame.Angles(0, 0, 2.9 + fl) * CFrame.Angles(0.3, 0, 0))
+								setT(j, "Left Shoulder", CFrame.Angles(0, 0, -(2.9 - fl)) * CFrame.Angles(0.3, 0, 0))
+							else
+								setT(j, "Right Shoulder", CFrame.Angles(0, 0, -sR * a * 0.9))
+								setT(j, "Left Shoulder", CFrame.Angles(0, 0, sL * a * 0.9))
+							end
+							setT(j, "RootJoint", CFrame.Angles(-0.08 * a, 0, 0))
+						else
+						setT(j, "RightHip", CFrame.Angles(sR * a, 0, 0))
+						setT(j, "LeftHip", CFrame.Angles(sL * a, 0, 0))
+						setT(j, "RightKnee", CFrame.Angles(-math.max(0, math.cos(ph)) * a * 1.3, 0, 0))
+						setT(j, "LeftKnee", CFrame.Angles(-math.max(0, math.cos(ph + math.pi)) * a * 1.3, 0, 0))
+						setT(j, "Waist", CFrame.Angles(-0.1 * a, 0, 0))
+						if burning[m] then
+							-- on fire: arms up in the air, flailing
+							local fl = math.sin(now * 14 + (m:GetFullName():len() % 5)) * 0.35
+							setT(j, "RightShoulder", CFrame.Angles(2.7 + fl, 0, -0.45))
+							setT(j, "LeftShoulder", CFrame.Angles(2.7 - fl, 0, 0.45))
+							setT(j, "RightElbow", CFrame.Angles(0.4 + fl * 0.5, 0, 0))
+							setT(j, "LeftElbow", CFrame.Angles(0.4 - fl * 0.5, 0, 0))
+						else
+							setT(j, "RightShoulder", CFrame.Angles(-sR * a * 0.9, 0, 0))
+							setT(j, "LeftShoulder", CFrame.Angles(-sL * a * 0.9, 0, 0))
+							setT(j, "RightElbow", CFrame.Angles(0.25 + a * 0.5, 0, 0))
+							setT(j, "LeftElbow", CFrame.Angles(0.25 + a * 0.5, 0, 0))
+						end
+						end -- r15 / r6
+					end
+				end
+			end
+		end)
+
+		RunService.Heartbeat:Connect(function(dt)
+			local now = os.clock()
+			local out = crosshairWanted > 0 and B.ENABLED ~= false
+
+			-- aim detection
+			local m, hum, root
+			if out and not firingNow then
+				m, hum, root = targetUnder()
+			end
+			if m and m == aimModel then
+				aimTime += dt
+			else
+				aimModel, aimTime = m, 0
+			end
+
+			if scene then
+				local s = scene
+				if not out then
+					endScene("cancel")
+				elseif burning[s.model] then
+					endScene("fired")
+				elseif not (s.model.Parent and s.hum.Parent and s.hum.Health > 0 and s.root.Parent) then
+					endScene("cancel")
+				else
+					-- lost aim? mercy timer
+					if aimModel == s.model then
+						s.lost = nil
+					else
+						s.lost = s.lost or now
+						if now - s.lost > MERCY and not firingNow then
+							endScene("spared")
+						end
+					end
+				end
+			end
+
+			if scene then
+				local s = scene
+				-- turn to face you
+				local mine = getRoot()
+				if mine then
+					local p = s.root.Position
+					local want = CFrame.lookAt(p, Vector3.new(mine.Position.X, p.Y, mine.Position.Z))
+					s.root.CFrame = s.root.CFrame:Lerp(want, math.min(dt * 8, 1))
+					s.hum:Move(Vector3.zero)
+					local cam = Workspace.CurrentCamera
+					if cam and dof.Enabled then
+						dof.FocusDistance = math.max((cam.CFrame.Position - p).Magnitude, 1)
+					end
+				end
+				-- no emote? use the built-in kneel
+				local t = now - s.start
+				if s.track and t > 0.8 and s.track.Length <= 0 then s.track = nil end
+				if not s.track then kneelPose(s, t) end
+
+				if now >= s.nextLine then
+					s.nextLine = now + 1.9
+					s.line += 1
+					local line = LINES[((s.line - 1) % #LINES) + 1]
+					say(s.model, line)
+					subtitle(line)
+				end
+			elseif not firingNow and m and aimTime >= AIM_TIME and now >= (cooldown[m] or 0) then
+				startScene(m, hum, root)
+			end
+
+			-- the dark look is ONLY on while the crosshair is on him (a short grace so it doesn't flicker)
+			local onHim = scene ~= nil and aimModel == scene.model
+			if scene then
+				if onHim or firingNow then scene.offAim = nil else scene.offAim = scene.offAim or now end
+			end
+			local wantLook = B.CINEMATIC ~= false and scene ~= nil and (scene.offAim == nil or now - scene.offAim < 0.25)
+			if cinemaOn and not wantLook then cinemaOut() end
+			if wantLook and not cinemaOn then cinemaIn() end
+			-- safety net: nothing may stay dark once the scene is over
+			if not cinemaOn and (grade.Enabled or dof.Enabled) and now - outAt > 1.2 then
+				grade.Enabled, dof.Enabled = false, false
+				vig.GroupTransparency = 1
+				topBar.Size, botBar.Size = UDim2.fromScale(1, 0), UDim2.fromScale(1, 0)
+			end
+
+			-- scene replaced by someone else you're aiming at
+			if scene and m and m ~= scene.model and aimTime >= AIM_TIME and now >= (cooldown[m] or 0) then
+				endScene("cancel")
+			end
+		end)
+
+		-- slow handheld sway while the scene runs, plus a kick when the fire starts
+		RunService:BindToRenderStep("FlamethrowerCinema", Enum.RenderPriority.Camera.Value + 2, function(dt)
+			local cam = Workspace.CurrentCamera
+			if not cam then return end
+			local t = os.clock()
+			local a = scene and 0.0025 or 0
+			local sh = 0
+			if shakeT > 0 then
+				shakeT = math.max(0, shakeT - dt)
+				sh = shakeT * 0.05
+			end
+			if a + sh > 0 then
+				cam.CFrame = cam.CFrame * CFrame.Angles(
+					math.sin(t * 1.3) * a + (math.random() - 0.5) * sh,
+					math.cos(t * 1.7) * a + (math.random() - 0.5) * sh,
+					0
+				)
+			end
+		end)
+	end
+end
+
+------------------------------------------------------------------ OVERHEAT
+-- fire non-stop for TIME seconds and the tank blows up in your face. Letting go cools it down again.
+if not CFG.LITE then
+	local H = CFG.HEAT or {}
+	local TweenService = game:GetService("TweenService")
+	local heat = 0           -- 0..1
+	local lastChar = nil
+	local warned = false
+	local exploded = false
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "FlamethrowerHeatHUD"
+	gui.ResetOnSpawn = false
+	gui.Enabled = false
+	gui.Parent = player:WaitForChild("PlayerGui")
+
+	local frame = Instance.new("Frame")
+	frame.AnchorPoint = Vector2.new(0.5, 1)
+	frame.Position = UDim2.new(0.5, 0, 1, -154)
+	frame.Size = UDim2.fromOffset(240, 38)
+	frame.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
+	frame.BackgroundTransparency = 0.2
+	frame.BorderSizePixel = 1
+	frame.BorderColor3 = Color3.fromRGB(80, 80, 80)
+	frame.Parent = gui
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, 0, 0, 18)
+	title.Position = UDim2.fromOffset(0, 3)
+	title.BackgroundTransparency = 1
+	title.TextColor3 = Color3.fromRGB(230, 230, 230)
+	title.Font = Enum.Font.Code
+	title.TextSize = 13
+	title.Text = "HEAT  0%"
+	title.Parent = frame
+
+	local back = Instance.new("Frame")
+	back.Size = UDim2.new(1, -20, 0, 8)
+	back.Position = UDim2.fromOffset(10, 24)
+	back.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+	back.BorderSizePixel = 0
+	back.Parent = frame
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.fromScale(0, 1)
+	fill.BorderSizePixel = 0
+	fill.BackgroundColor3 = Color3.fromRGB(90, 170, 255)
+	fill.Parent = back
+
+	local white = Instance.new("ScreenGui")
+	white.Name = "FlamethrowerBlast"
+	white.ResetOnSpawn = false
+	white.IgnoreGuiInset = true
+	white.DisplayOrder = 100
+	white.Parent = player:WaitForChild("PlayerGui")
+	local wf = Instance.new("Frame")
+	wf.Size = UDim2.fromScale(1, 1)
+	wf.BackgroundColor3 = Color3.fromRGB(255, 235, 200)
+	wf.BackgroundTransparency = 1
+	wf.BorderSizePixel = 0
+	wf.Parent = white
+
+	local function explode()
+		exploded = true
+		heat = 0
+		local char, root = getChar(), getRoot()
+		if not root then return end
+		local pos = root.Position
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+		-- blast look (local only: no pressure, no joint damage)
+		local ex = Instance.new("Explosion")
+		ex.Position = pos
+		ex.BlastRadius = 12
+		ex.BlastPressure = 0
+		ex.DestroyJointRadiusPercent = 0
+		ex.ExplosionType = Enum.ExplosionType.NoCraters
+		ex.Parent = Workspace
+
+		local ball = Instance.new("Part")
+		ball.Shape = Enum.PartType.Ball
+		ball.Anchored, ball.CanCollide, ball.CanQuery, ball.CanTouch = true, false, false, false
+		ball.Material = Enum.Material.Neon
+		ball.Color = Color3.fromRGB(255, 150, 40)
+		ball.Size = Vector3.one * 3
+		ball.Position = pos
+		ball.Parent = fxFolder or Workspace
+		TweenService:Create(ball, TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = Vector3.one * 26, Transparency = 1,
+		}):Play()
+		Debris:AddItem(ball, 1)
+		local light = Instance.new("PointLight")
+		light.Color = Color3.fromRGB(255, 160, 60)
+		light.Range = 40
+		light.Brightness = 8
+		light.Parent = ball
+		local att = Instance.new("Attachment")
+		att.WorldPosition = pos
+		att.Parent = Workspace.Terrain
+		local sm = makeSmokeEmitter(att, 40, 5)
+		sm.Lifetime = NumberRange.new(2.5, 4.5)
+		task.delay(0.5, function() sm.Enabled = false end)
+		Debris:AddItem(att, 6)
+
+		playSoundAt(root, CFG.SOUNDS.EXPLODE ~= "" and CFG.SOUNDS.EXPLODE or "rbxasset://sounds/impact_explosion_03.mp3", { Volume = 2 })
+
+		wf.BackgroundTransparency = 0
+		TweenService:Create(wf, TweenInfo.new(1.6, Enum.EasingStyle.Quad), { BackgroundTransparency = 1 }):Play()
+
+		-- anyone standing close burns too
+		local ps = OverlapParams.new()
+		ps.FilterType = Enum.RaycastFilterType.Exclude
+		ps.FilterDescendantsInstances = { fxFolder, char }
+		local seen = {}
+		for _, part in ipairs(Workspace:GetPartBoundsInRadius(pos, 16, ps)) do
+			local m = part:FindFirstAncestorOfClass("Model")
+			if m and not seen[m] and not Players:GetPlayerFromCharacter(m) then
+				local h = m:FindFirstChildOfClass("Humanoid")
+				if h and h.Health > 0 then
+					seen[m] = true
+					ignite(m, h)
+				end
+			end
+		end
+
+		notify("OVERHEATED", "The flamethrower exploded!", 4)
+		-- you go with it
+		if hum then
+			hum.Health = 0
+			if char then
+				for _, p in ipairs(char:GetDescendants()) do
+					if p:IsA("BasePart") then
+						p.AssemblyLinearVelocity = (p.Position - pos).Unit * 55 + Vector3.new(0, 45, 0)
+					end
+				end
+			end
+		end
+	end
+
+	RunService.Heartbeat:Connect(function(dt)
+		local char = getChar()
+		if char ~= lastChar then
+			lastChar = char
+			heat, warned, exploded = 0, false, false
+		end
+		local on = H.ENABLED ~= false
+		local out = crosshairWanted > 0
+		gui.Enabled = on and out and not exploded
+		if not on then
+			heat = 0
+			return
+		end
+
+		local time = math.max(H.TIME or 8, 1)
+		if firingNow then
+			heat = math.min(1, heat + dt / time)
+		else
+			heat = math.max(0, heat - dt * (H.COOL or 0.18))
+		end
+		if heat < 0.5 then warned = false end
+
+		-- bar + warning text
+		local warn = H.WARN or 0.65
+		fill.Size = UDim2.fromScale(heat, 1)
+		local pct = math.floor(heat * 100 + 0.5)
+		if heat >= warn then
+			local blink = math.sin(os.clock() * (10 + heat * 14)) > 0
+			title.Text = string.format("HEAT! HEAT!  %d%%", pct)
+			title.TextColor3 = blink and Color3.fromRGB(255, 70, 50) or Color3.fromRGB(255, 255, 255)
+			frame.BorderColor3 = blink and Color3.fromRGB(255, 70, 50) or Color3.fromRGB(80, 80, 80)
+			fill.BackgroundColor3 = Color3.fromRGB(255, 50, 30)
+			if not warned and heat >= 0.85 then
+				warned = true
+				notify("OVERHEATING!", "Let go of the trigger or it will blow up!", 3)
+				playSoundAt(getRoot(), CFG.SOUNDS.HEAT_WARN, { Volume = 1 })
+			end
+		else
+			title.Text = string.format("HEAT  %d%%", pct)
+			title.TextColor3 = Color3.fromRGB(230, 230, 230)
+			frame.BorderColor3 = Color3.fromRGB(80, 80, 80)
+			fill.BackgroundColor3 = heat < 0.35 and Color3.fromRGB(90, 170, 255) or Color3.fromRGB(255, 175, 40)
+		end
+
+		if heat >= 1 and not exploded and firingNow then
+			explode()
+		end
+	end)
+end
+
+local hooked = {}
+local function hookTool(tool)
+	if hooked[tool] or not tool:IsA("Tool") then return end
+	if not string.find(string.lower(tool.Name), CFG.TOOL_KEYWORD) then return end
+	hooked[tool] = true
+
+	-- store tool: add the back tank + hose so the fuel nozzle has something to plug into
+	if (CFG.BACK_TANK or CFG.LITE) and not rigOf[tool] then
+		local char = getChar()
+		local r15 = true
+		local torso = char and char:FindFirstChild("UpperTorso")
+		if char and not torso then
+			r15 = false
+			torso = char:FindFirstChild("Torso")
+		end
+		if torso and getHandle(tool) then
+			local rig = buildRig(char, torso, r15)
+			rig.storeMode = true
+			rig.tool = tool
+			rig.handle = getHandle(tool)
+			rigOf[tool] = rig
+			activeRig = rig
+			updateFuelUI()
+		end
+	end
+
+	local conns = {}
+	local function bind(sig, fn)
+		table.insert(conns, sig:Connect(function(...)
+			if CFG.FT.stopped then return end
+			return fn(...)
+		end))
+	end
+
+	local holding = false
+	local loopSound
+	local fx
+	local startedAt, pressId, loopId = 0, 0, 0
+	local rsConn
+	local chOn = false
+	local function setOut(v) -- this tool is equipped: crosshair + (optionally) shift lock
+		if v == chOn then return end
+		chOn = v
+		crosshairWanted += v and 1 or -1
+		CFG.NET.setActive(crosshairWanted > 0)
+		CFG.setMenuVisible(crosshairWanted > 0)
+		if CFG.AUTO_SHIFTLOCK then setShiftLock(v) end
+	end
+
+	local function getFx()
+		if fx then return fx end
+		fx = fxOf[tool]
+		if not fx then
+			local m = getMuzzle(tool)
+			if m then
+				fx = buildFlameFX(m)
+				fxOf[tool] = fx
+				fx.store = true
+			end
+		end
+		return fx
+	end
+
+	local function stop()
+		holding = false
+		firingNow = false
+		if fx then setFiring(fx, false) end
+		if rsConn then
+			rsConn:Disconnect()
+			rsConn = nil
+		end
+		local rig = rigOf[tool]
+		if rig then rig.firing = false end
+		if loopSound then
+			loopSound:Stop()
+			loopSound:Destroy()
+			loopSound = nil
+		end
+	end
+
+	local function start()
+		if holding then
+			pressId += 1 -- cancels a pending delayed stop
+			return
+		end
+		if tool.Parent ~= getChar() or refueling then return end
+		if fuel <= 0 then
+			notifyEmpty()
+			return
+		end
+		pressId += 1
+		loopId += 1
+		local myLoop = loopId
+		holding = true
+		firingNow = true
+		startedAt = os.clock()
+		local f = getFx()
+		if f then setFiring(f, true) end
+		local rig = rigOf[tool]
+		if rig then rig.firing = true end
+		if f and f.store then
+			-- store model: keep the flame pointed from its tip toward the crosshair
+			rsConn = RunService.RenderStepped:Connect(function()
+				local o = muzzlePoint(tool)
+				if not o then return end
+				local d = getAimDir(o)
+				if d then f.att.WorldCFrame = CFrame.lookAt(o, o + d) end
+			end)
+		end
+		playSoundAt(getMuzzle(tool), CFG.SOUNDS.FLAME_START, { Volume = 0.9 })
+		loopSound = playSoundAt(getMuzzle(tool), CFG.SOUNDS.FLAME_LOOP, { Looped = true, Volume = 0.8 })
+
+		task.spawn(function()
+			while holding and loopId == myLoop and tool.Parent == getChar() and not refueling do
+				sprayFlame(tool)
+				if not useFuel(CFG.TICK) then break end
+				task.wait(CFG.TICK)
+			end
+			if loopId == myLoop then stop() end
+		end)
+	end
+
+	-- a quick click still gives a short burst, holding keeps it going
+	local function release()
+		if not holding then return end
+		local id = pressId
+		local left = 0.4 - (os.clock() - startedAt)
+		if left > 0 then
+			task.delay(left, function()
+				if pressId == id then stop() end
+			end)
+		else
+			stop()
+		end
+	end
+
+	bind(tool.Activated, start)
+	bind(tool.Deactivated, release)
+	bind(UserInputService.InputBegan, function(input, processed)
+		if not processed and input.UserInputType == Enum.UserInputType.MouseButton1 then start() end
+	end)
+	bind(UserInputService.InputEnded, function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then release() end
+	end)
+
+	-- phone fire button
+	local fireGui
+	if UserInputService.TouchEnabled then
+		fireGui = Instance.new("ScreenGui")
+		fireGui.Name = "FlamethrowerFireButton"
+		fireGui.ResetOnSpawn = false
+		fireGui.Enabled = (tool.Parent == getChar())
+		fireGui.Parent = player:WaitForChild("PlayerGui")
+		local fireBtn = Instance.new("TextButton")
+		fireBtn.AnchorPoint = Vector2.new(1, 1)
+		fireBtn.Position = UDim2.new(1, -30, 1, -170)
+		fireBtn.Size = UDim2.fromOffset(88, 88)
+		fireBtn.BackgroundColor3 = Color3.fromRGB(200, 70, 20)
+		fireBtn.BackgroundTransparency = 0.15
+		fireBtn.Text = "FIRE"
+		fireBtn.TextColor3 = Color3.fromRGB(245, 245, 245)
+		fireBtn.Font = Enum.Font.Code
+		fireBtn.TextSize = 18
+		fireBtn.AutoButtonColor = true
+		fireBtn.Parent = fireGui
+		local fc = Instance.new("UICorner")
+		fc.CornerRadius = UDim.new(0, 0)
+		fc.Parent = fireBtn
+		local fs = Instance.new("UIStroke")
+		fs.Color = Color3.fromRGB(255, 160, 60)
+		fs.Thickness = 2
+		fs.Parent = fireBtn
+		fireBtn.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then start() end
+		end)
+		fireBtn.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then release() end
+		end)
+	end
+
+	bind(tool.Equipped, function()
+		local rig = rigOf[tool]
+		if rig then setEquipped(rig, true) end
+		if fireGui then fireGui.Enabled = true end
+		setFuelHudVisible(true)
+		setOut(true)
+	end)
+	bind(tool.Unequipped, function()
+		stop()
+		local rig = rigOf[tool]
+		if rig then setEquipped(rig, false) end
+		if fireGui then fireGui.Enabled = false end
+		setFuelHudVisible(false)
+		setOut(false)
+	end)
+	bind(tool.AncestryChanged, function()
+		if not tool:IsDescendantOf(game) then
+			stop()
+			setOut(false)
+			hooked[tool] = nil
+			for _, c in ipairs(conns) do c:Disconnect() end
+			if fireGui then fireGui:Destroy() end
+			local rig = rigOf[tool]
+			if rig then
+				if activeRig == rig then activeRig = nil end
+				if rig.model.Parent then rig.model:Destroy() end
+				rigOf[tool] = nil
+			end
+			setFuelHudVisible(false)
+		end
+	end)
+
+	if tool.Parent == getChar() then
+		local rig = rigOf[tool]
+		if rig then setEquipped(rig, true) end
+		if fireGui then fireGui.Enabled = true end
+		setFuelHudVisible(true)
+		setOut(true)
+	end
+	notify("Flamethrower", "Equip it and hold click / FIRE.", 3)
+end
+
+local function watchContainer(container)
+	for _, c in ipairs(container:GetChildren()) do hookTool(c) end
+	table.insert(CFG.FT.conns, container.ChildAdded:Connect(function(c)
+		if not CFG.FT.stopped then hookTool(c) end
+	end))
+end
+
+local function findFlameTool()
+	local char, pack = getChar(), player:FindFirstChildOfClass("Backpack")
+	for _, container in ipairs({ char, pack }) do
+		if container then
+			for _, t in ipairs(container:GetChildren()) do
+				if t:IsA("Tool") and string.find(string.lower(t.Name), CFG.TOOL_KEYWORD) then
+					return t
+				end
+			end
+		end
+	end
+end
+
+local rigWarned = false
+RunService:BindToRenderStep("FlamethrowerRig", Enum.RenderPriority.Last.Value, function()
+	local rig = activeRig
+	if rig and rig.equipped and rig.model.Parent then
+		local ok, err = pcall(updateRig, rig)
+		if not ok and not rigWarned then
+			rigWarned = true
+			warn("[Flamethrower] gun rig error: " .. tostring(err))
+		end
+	end
+end)
+
+-- the Animator rewrites arm joints every frame; writing again in these later steps keeps our pose on screen
+local armWarned = false
+local function armsSafe()
+	local rig = activeRig
+	if rig and rig.equipped and rig.model.Parent then
+		local ok, err = pcall(applyArms, rig)
+		if not ok and not armWarned then
+			armWarned = true
+			warn("[Flamethrower] arm error: " .. tostring(err))
+			notify("Flamethrower", "Arm error, check Output: " .. tostring(err), 8)
+		end
+	end
+end
+RunService.Stepped:Connect(armsSafe)
+RunService.Heartbeat:Connect(armsSafe)
+
+local function buildFallbackTool()
+	local char = getChar()
+	if not char then return end
+	local r15 = true
+	local torso = char:FindFirstChild("UpperTorso")
+	if not torso then
+		r15 = false
+		torso = char:FindFirstChild("Torso")
+	end
+	if not torso then return end
+
+	local tool = Instance.new("Tool")
+	tool.Name = "Flamethrower"
+	tool.RequiresHandle = false -- the gun is built on the character so we control how it is held
+	tool.CanBeDropped = false
+	tool.ToolTip = "Hold to burn"
+	tool:SetAttribute("FlamethrowerBuiltin", true)   -- lets a re-run find and replace it
+
+	local rig = buildRig(char, torso, r15)
+	rigOf[tool] = rig
+	muzzleOf[tool] = rig.muzzle
+	fxOf[tool] = rig.fx
+	activeRig = rig
+	updateFuelUI()
+
+	tool.Parent = player:WaitForChild("Backpack")
+end
+
+------------------------------------------------------------------ FUEL STATION
+local stations = {}
+local HOSE_MIN, HOSE_MAX = 2.2, 7.6
+local HOSE_POINTS = 23
+local NOZZLE_PORT = CFrame.new(1.5, 0.47, 0) * CFrame.Angles(0, math.rad(90), 0)   -- nozzle pose relative to the tank when plugged in
+
+local function easeInOut(t) return t * t * (3 - 2 * t) end
+
+-- on-screen PUMP button (also works on phones); the nozzle itself is clickable too
+local pumpClick = function(_) end
+local pumpGui = Instance.new("ScreenGui")
+pumpGui.Name = "FlamethrowerPumpButton"
+pumpGui.ResetOnSpawn = false
+pumpGui.Enabled = false
+pumpGui.Parent = player:WaitForChild("PlayerGui")
+do
+	local b = Instance.new("TextButton")
+	b.AnchorPoint = Vector2.new(0.5, 1)
+	b.Position = UDim2.new(0.5, 0, 1, -170)
+	b.Size = UDim2.fromOffset(170, 52)
+	b.BackgroundColor3 = Color3.fromRGB(214, 84, 24)
+	b.TextColor3 = Color3.fromRGB(245, 245, 245)
+	b.Font = Enum.Font.Code
+	b.TextSize = 16
+	b.Text = "CLICK TO PUMP"
+	b.AutoButtonColor = true
+	b.BorderSizePixel = 0
+	b.Parent = pumpGui
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, 0)
+	c.Parent = b
+	local st = Instance.new("UIStroke")
+	st.Color = Color3.fromRGB(255, 170, 70)
+	st.Thickness = 2
+	st.Parent = b
+	b.MouseButton1Click:Connect(function()
+		pumpClick(refueling)
+	end)
+end
+
+-- where the nozzle goes: the fuel port on your tank (or your back if the gun is a store model)
+local function portNozzleCF()
+	local rig = activeRig
+	if rig and rig.model.Parent and rig.root.Parent then
+		return rig.root.CFrame * NOZZLE_PORT
+	end
+	local r = getRoot()
+	if r then
+		return r.CFrame * CFrame.new(1.4, 0.3, 1.3) * CFrame.Angles(0, math.rad(90), 0)
+	end
+	return nil
+end
+
+local function setDisplay(st, status, litres, color)
+	st.statusLbl.Text = status
+	st.litreLbl.Text = litres
+	if color then
+		st.statusLbl.TextColor3 = color
+		st.lamp.Color = color
+		st.lampLight.Color = color
+	end
+end
+
+local function litresText(st)
+	return string.format("%.1f L", st.added / CFG.FUEL_MAX * CFG.TANK_LITRES)
+end
+
+local function stopFlow(st)
+	if st.flow then
+		st.flow:Stop()
+		st.flow:Destroy()
+		st.flow = nil
+	end
+end
+
+local function abortRefuel(st, why)
+	if st.state ~= "extending" and st.state ~= "fueling" then return end
+	st.state = "retracting"
+	stopFlow(st)
+	setDisplay(st, "DISCONNECTED", litresText(st), RED)
+	notify("Fuel station", why, 3)
+end
+
+pumpClick = function(st)
+	if not st or st.state ~= "fueling" then return end
+	local now = os.clock()
+	if now - (st.lastClick or 0) < 0.07 then return end
+	st.lastClick = now
+	st.pending += CFG.PUMP_PER_CLICK
+	st.squeeze = 0.12
+	playSoundAt(st.nozzle, CFG.SOUNDS.PUMP_CLICK, { Volume = 0.8 })
+end
+
+local function startRefuel(st)
+	if refueling then return end
+	if not findFlameTool() then
+		notify("Fuel station", "You need the flamethrower.", 3)
+		return
+	end
+	if fuel >= CFG.FUEL_MAX - 0.5 then
+		notify("Fuel station", "Your tank is already full.", 2)
+		return
+	end
+	if not portNozzleCF() then return end
+	refueling = st
+	st.state = "extending"
+	st.ext = 0
+	st.added = 0
+	st.pending = 0
+	st.prompt.Enabled = false
+	setDisplay(st, "CONNECTING", "0.0 L", AMBER)
+end
+
+local function stationHoseCollide(st)
+	local cf = st.base
+	return function(pts, n)
+		for i = 2, n - 1 do
+			local l = cf:PointToObjectSpace(pts[i])
+			local x, y, z = l.X, l.Y, l.Z
+			local onIsland = math.abs(x) < 2.3 and math.abs(z) < 1.5
+			local floorY = onIsland and 0.55 or 0.1
+			if y < floorY then y = floorY end
+			-- keep it out of the pump body
+			if math.abs(x) < 1.0 and y < 4.0 and math.abs(z) < 0.7 then
+				local dx, dz = 1.0 - math.abs(x), 0.7 - math.abs(z)
+				if dx < dz then
+					x = (x >= 0 and 1 or -1) * 1.0
+				else
+					z = (z >= 0 and 1 or -1) * 0.7
+				end
+			end
+			pts[i] = cf:PointToWorldSpace(Vector3.new(x, y, z))
+		end
+	end
+end
+
+local function stationStep(st, dt)
+	local active = st.state ~= "idle"
+	if not active and st.settle <= 0 then return end
+	st.settle = math.max(0, st.settle - dt)
+	local now = os.clock()
+
+	local target
+	if active then
+		target = portNozzleCF()
+		if target then st.lastTarget = target end
+		if st.state == "extending" or st.state == "fueling" then
+			local char = getChar()
+			local root = getRoot()
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if not root or not hum or hum.Health <= 0 then
+				abortRefuel(st, "Fueling interrupted.")
+			elseif (root.Position - st.base.Position).Magnitude > CFG.STATION_LEAVE_DIST then
+				abortRefuel(st, "You walked off with the nozzle still in. It popped out.")
+			end
+		end
+	end
+
+	if st.state == "extending" then
+		st.ext = math.min(1, st.ext + dt / 0.7)
+		if st.ext >= 1 then
+			st.state = "fueling"
+			playSoundAt(st.nozzle, CFG.SOUNDS.CONNECT, { Volume = 1 })
+			st.flow = playSoundAt(st.nozzle, CFG.SOUNDS.FUEL_LOOP, { Looped = true, Volume = 0.8 })
+			setDisplay(st, "CLICK NOZZLE", litresText(st), AMBER)
+			notify("Fuel station", "Nozzle is in. Click the nozzle (or the PUMP button) again and again to fill the tank.", 5)
+		end
+	elseif st.state == "fueling" then
+		st.ext = 1
+		-- fuel only flows from clicks: each click queues some, the queue drains smoothly
+		local add = math.min(st.pending, 70 * dt, CFG.FUEL_MAX - fuel)
+		if add > 0 then
+			st.pending -= add
+			fuel += add
+			st.added += add
+			updateFuelUI()
+			st.litreLbl.Text = litresText(st)
+			if st.statusLbl.Text ~= "PUMPING" then st.statusLbl.Text = "PUMPING" end
+		elseif st.pending <= 0 and st.statusLbl.Text ~= "CLICK NOZZLE" then
+			st.statusLbl.Text = "CLICK NOZZLE"
+		end
+		st.lampLight.Brightness = 1.6 + math.sin(now * 8) * 0.8
+		if fuel >= CFG.FUEL_MAX - 0.01 then
+			fuel = CFG.FUEL_MAX
+			lowWarned = false
+			updateFuelUI()
+			stopFlow(st)
+			playSoundAt(st.nozzle, CFG.SOUNDS.REFILL, { Volume = 1 })
+			setDisplay(st, "FULL", litresText(st), GREEN)
+			notify("Fuel station", "Tank full.", 2)
+			st.state = "retracting"
+		end
+	elseif st.state == "retracting" then
+		st.ext = math.max(0, st.ext - dt / 0.6)
+		if st.ext <= 0 then
+			st.state = "idle"
+			st.settle = 2
+			if refueling == st then refueling = nil end
+			st.prompt.Enabled = true
+			st.lampLight.Brightness = 1.4
+			setDisplay(st, "READY", "0.0 L", GREEN)
+		end
+	end
+
+	local e = easeInOut(st.ext)
+	local dest = target or st.lastTarget or st.restCF
+	local nzCF = st.restCF:Lerp(dest, e) + Vector3.new(0, math.sin(e * math.pi) * 0.5, 0)
+	if st.squeeze > 0 then
+		st.squeeze -= dt
+		nzCF = nzCF * CFrame.new((math.random() - 0.5) * 0.035, (math.random() - 0.5) * 0.035, 0)
+		st.leverW.C0 = st.leverBase * CFrame.Angles(math.rad(-28), 0, 0)
+	else
+		st.leverW.C0 = st.leverBase
+	end
+	st.hl.Enabled = st.state == "fueling"
+	if st.hl.Enabled then
+		st.hl.OutlineTransparency = 0.25 + (math.sin(now * 7) + 1) * 0.25
+	end
+	st.nozzle.CFrame = nzCF
+
+	local A = st.hoseStart
+	local B = (nzCF * CFrame.new(0, 0, 0.5)).Position
+	local len = HOSE_MIN + (HOSE_MAX - HOSE_MIN) * e
+	if (st.state == "extending" or st.state == "fueling") and (A - B).Magnitude > HOSE_MAX - 0.2 then
+		abortRefuel(st, "The hose ran out of slack. The nozzle popped out.")
+	end
+	ropeStep(st.rope, A, B, len, st.collide)
+	ropeRender(st.rope, st.segs, 0.13)
+end
+
+RunService.RenderStepped:Connect(function(dt)
+	pumpGui.Enabled = refueling ~= nil and refueling.state == "fueling"
+	for _, st in ipairs(stations) do
+		local ok, err = pcall(stationStep, st, dt)
+		if not ok and not st.warned then
+			st.warned = true
+			warn("[Flamethrower] fuel station error: " .. tostring(err))
+		end
+	end
+end)
+
+local function destroyStation(st)
+	if refueling == st then refueling = nil end
+	stopFlow(st)
+	if st.model.Parent then st.model:Destroy() end
+end
+
+local function placeStation(position, faceTo)
+	local G = groundAt(position)
+	while #stations >= 3 do
+		destroyStation(table.remove(stations, 1))
+	end
+
+	local flat = Vector3.new(faceTo.X, G.Y, faceTo.Z)
+	if (flat - G).Magnitude < 0.5 then flat = G + Vector3.new(0, 0, -1) end
+	local base = CFrame.lookAt(G, flat)   -- front of the pump (-Z) faces the player
+
+	local model = Instance.new("Model")
+	model.Name = "FuelStation"
+	model:SetAttribute("FlamethrowerStation", true)
+	local function sp(name, size, color, mat, offset, shape, collide)
+		local p = Instance.new("Part")
+		p.Name = name
+		p.Size = size
+		p.Color = color
+		p.Material = mat or Enum.Material.Metal
+		p.Anchored = true
+		p.CanCollide = collide or false
+		p.TopSurface = Enum.SurfaceType.Smooth
+		p.BottomSurface = Enum.SurfaceType.Smooth
+		if shape then p.Shape = shape end
+		p.CFrame = base * offset
+		p.Parent = model
+		return p
+	end
+	local UPR = CFrame.Angles(0, 0, math.rad(90))
+	local PLASTIC, METAL, CONCRETE = Enum.Material.SmoothPlastic, Enum.Material.Metal, Enum.Material.Concrete
+
+	-- island + safety stripes
+	sp("Island", Vector3.new(4.4, 0.45, 2.8), Color3.fromRGB(125, 125, 122), CONCRETE, CFrame.new(0, 0.225, 0), nil, true)
+	sp("StripeFront", Vector3.new(4.4, 0.03, 0.14), Color3.fromRGB(230, 190, 40), PLASTIC, CFrame.new(0, 0.46, -1.3))
+	sp("StripeBack", Vector3.new(4.4, 0.03, 0.14), Color3.fromRGB(230, 190, 40), PLASTIC, CFrame.new(0, 0.46, 1.3))
+
+	-- pump
+	sp("PumpFoot", Vector3.new(1.95, 0.35, 1.35), Color3.fromRGB(48, 48, 52), METAL, CFrame.new(0, 0.62, 0), nil, true)
+	local pump = sp("Pump", Vector3.new(1.8, 3.4, 1.2), Color3.fromRGB(200, 52, 38), PLASTIC, CFrame.new(0, 2.5, 0), nil, true)
+	sp("PumpTop", Vector3.new(2.0, 0.4, 1.4), Color3.fromRGB(36, 30, 28), METAL, CFrame.new(0, 4.4, 0), nil, true)
+
+	-- FUEL sign, both sides
+	for _, side in ipairs({ -1, 1 }) do
+		local panel = sp("Sign", Vector3.new(1.45, 0.75, 0.08), Color3.fromRGB(28, 18, 14), PLASTIC, CFrame.new(0, 3.75, 0.62 * side))
+		local sg = Instance.new("SurfaceGui")
+		sg.Face = side == -1 and Enum.NormalId.Front or Enum.NormalId.Back
+		sg.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		sg.PixelsPerStud = 60
+		sg.Parent = panel
+		local t = Instance.new("TextLabel")
+		t.Size = UDim2.fromScale(1, 1)
+		t.BackgroundTransparency = 1
+		t.Text = "\u{26FD} FUEL"
+		t.TextColor3 = Color3.fromRGB(255, 150, 40)
+		t.Font = Enum.Font.GothamBlack
+		t.TextScaled = true
+		t.Parent = sg
+	end
+
+	-- digital display on the front
+	sp("Bezel", Vector3.new(1.3, 0.8, 0.05), Color3.fromRGB(44, 44, 48), PLASTIC, CFrame.new(0, 2.75, -0.61))
+	local screen = sp("Screen", Vector3.new(1.16, 0.64, 0.05), Color3.fromRGB(8, 14, 10), PLASTIC, CFrame.new(0, 2.75, -0.64))
+	local sg = Instance.new("SurfaceGui")
+	sg.Face = Enum.NormalId.Front
+	sg.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	sg.PixelsPerStud = 80
+	sg.Parent = screen
+	local statusLbl = Instance.new("TextLabel")
+	statusLbl.Size = UDim2.fromScale(1, 0.45)
+	statusLbl.BackgroundTransparency = 1
+	statusLbl.Font = Enum.Font.Code
+	statusLbl.TextScaled = true
+	statusLbl.TextColor3 = GREEN
+	statusLbl.Text = "READY"
+	statusLbl.Parent = sg
+	local litreLbl = Instance.new("TextLabel")
+	litreLbl.Size = UDim2.fromScale(1, 0.5)
+	litreLbl.Position = UDim2.fromScale(0, 0.48)
+	litreLbl.BackgroundTransparency = 1
+	litreLbl.Font = Enum.Font.Code
+	litreLbl.TextScaled = true
+	litreLbl.TextColor3 = Color3.fromRGB(230, 235, 230)
+	litreLbl.Text = "0.0 L"
+	litreLbl.Parent = sg
+
+	local plate = sp("Plate", Vector3.new(1.3, 0.3, 0.04), Color3.fromRGB(225, 218, 195), PLASTIC, CFrame.new(0, 1.9, -0.61))
+	local pg = Instance.new("SurfaceGui")
+	pg.Face = Enum.NormalId.Front
+	pg.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	pg.PixelsPerStud = 70
+	pg.Parent = plate
+	local pt = Instance.new("TextLabel")
+	pt.Size = UDim2.fromScale(1, 1)
+	pt.BackgroundTransparency = 1
+	pt.Font = Enum.Font.GothamBold
+	pt.TextScaled = true
+	pt.TextColor3 = Color3.fromRGB(40, 36, 34)
+	pt.Text = "FLAME FUEL"
+	pt.Parent = pg
+
+	-- hose outlet + nozzle holster on the right side
+	sp("HoseOutlet", Vector3.new(0.22, 0.34, 0.34), Color3.fromRGB(60, 60, 64), METAL, CFrame.new(0.97, 1.3, 0))
+	sp("HolsterBack", Vector3.new(0.12, 1.0, 0.5), Color3.fromRGB(34, 34, 38), METAL, CFrame.new(0.95, 2.4, 0))
+	sp("HolsterCup", Vector3.new(0.45, 0.34, 0.34), Color3.fromRGB(40, 40, 44), METAL, CFrame.new(1.2, 1.95, 0) * UPR, CYL)
+
+	-- status lamp
+	local lamp = sp("Lamp", Vector3.new(0.45, 0.45, 0.45), GREEN, Enum.Material.Neon, CFrame.new(0, 4.85, 0), Enum.PartType.Ball)
+	local lampLight = Instance.new("PointLight")
+	lampLight.Color = GREEN
+	lampLight.Range = 14
+	lampLight.Brightness = 1.4
+	lampLight.Parent = lamp
+
+	-- canopy
+	for _, sx in ipairs({ -4.3, 4.3 }) do
+		sp("Column", Vector3.new(7.2, 0.55, 0.55), Color3.fromRGB(222, 222, 220), METAL, CFrame.new(sx, 3.6, 2.6) * UPR, CYL, true)
+	end
+	sp("Roof", Vector3.new(10.8, 0.5, 8.2), Color3.fromRGB(228, 228, 226), METAL, CFrame.new(0, 7.45, 0.2), nil, true)
+	sp("TrimFront", Vector3.new(10.8, 0.3, 0.16), Color3.fromRGB(196, 42, 34), PLASTIC, CFrame.new(0, 7.38, -3.92))
+	sp("TrimBack", Vector3.new(10.8, 0.3, 0.16), Color3.fromRGB(196, 42, 34), PLASTIC, CFrame.new(0, 7.38, 4.32))
+	for _, z in ipairs({ -1.4, 1.4 }) do
+		local strip = sp("LightStrip", Vector3.new(8, 0.08, 0.5), Color3.fromRGB(255, 248, 232), Enum.Material.Neon, CFrame.new(0, 7.17, z))
+		local l = Instance.new("PointLight")
+		l.Color = Color3.fromRGB(255, 236, 200)
+		l.Range = 26
+		l.Brightness = 1.2
+		l.Parent = strip
+	end
+
+	-- bollards and a jerry can
+	for _, sx in ipairs({ -2.0, 2.0 }) do
+		sp("Bollard", Vector3.new(2.2, 0.5, 0.5), Color3.fromRGB(232, 192, 38), PLASTIC, CFrame.new(sx, 1.55, -2.1) * UPR, CYL, true)
+		sp("BollardCap", Vector3.new(0.1, 0.52, 0.52), Color3.fromRGB(30, 30, 30), PLASTIC, CFrame.new(sx, 2.65, -2.1) * UPR, CYL)
+	end
+	sp("JerryCan", Vector3.new(0.9, 1.2, 0.5), Color3.fromRGB(178, 30, 24), PLASTIC, CFrame.new(-1.4, 1.05, -0.2), nil, true)
+	sp("JerryCap", Vector3.new(0.3, 0.2, 0.3), Color3.fromRGB(236, 196, 40), PLASTIC, CFrame.new(-1.6, 1.75, -0.2))
+	sp("JerryHandle", Vector3.new(0.4, 0.12, 0.1), Color3.fromRGB(150, 24, 20), PLASTIC, CFrame.new(-1.15, 1.7, -0.2))
+
+	-- floating label
+	local bb = Instance.new("BillboardGui")
+	bb.Size = UDim2.fromOffset(120, 24)
+	bb.StudsOffset = Vector3.new(0, 1.6, 0)
+	bb.AlwaysOnTop = true
+	bb.MaxDistance = 140
+	bb.Adornee = lamp
+	bb.Parent = lamp
+	local bl = Instance.new("TextLabel")
+	bl.Size = UDim2.fromScale(1, 1)
+	bl.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
+	bl.BackgroundTransparency = 0.2
+	bl.TextColor3 = Color3.fromRGB(255, 150, 40)
+	bl.Font = Enum.Font.Code
+	bl.TextScaled = true
+	bl.Text = "FUEL STATION"
+	bl.Parent = bb
+	local bp = Instance.new("UIPadding")
+	bp.PaddingTop, bp.PaddingBottom = UDim.new(0, 4), UDim.new(0, 4)
+	bp.Parent = bl
+	local blc = Instance.new("UICorner")
+	blc.CornerRadius = UDim.new(0, 0)
+	blc.Parent = bl
+
+	-- the nozzle (moves, everything else is welded to its root)
+	local restCF = base * CFrame.new(1.2, 2.75, 0) * CFrame.Angles(math.rad(-90), 0, 0) * CFrame.Angles(0, 0, math.rad(180))
+	local nz = Instance.new("Part")
+	nz.Name = "Nozzle"
+	nz.Size = Vector3.new(0.2, 0.2, 0.2)
+	nz.Transparency = 1
+	nz.Anchored = true
+	nz.CanCollide = false
+	nz.CanQuery = false
+	nz.CanTouch = false
+	nz.CFrame = restCF
+	local nozModel = Instance.new("Model")
+	nozModel.Name = "NozzleModel"
+	nozModel.Parent = model
+	nz.Parent = nozModel
+	local function nadd(name, size, color, mat, offset, shape)
+		local p = Instance.new("Part")
+		p.Name = name
+		p.Size = size
+		p.Color = color
+		p.Material = mat
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CanTouch = false
+		p.Massless = true
+		p.TopSurface = Enum.SurfaceType.Smooth
+		p.BottomSurface = Enum.SurfaceType.Smooth
+		if shape then p.Shape = shape end
+		p.CFrame = nz.CFrame * offset
+		p.Parent = nozModel
+		local w = Instance.new("Weld")
+		w.Part0 = nz
+		w.Part1 = p
+		w.C0 = offset
+		w.Parent = p
+		return p
+	end
+	local nozBody = nadd("NozBody", Vector3.new(0.22, 0.22, 0.7), Color3.fromRGB(30, 30, 33), PLASTIC, CFrame.new(0, 0.08, 0.05))
+	local nozGrip = nadd("NozGrip", Vector3.new(0.2, 0.5, 0.24), Color3.fromRGB(24, 24, 26), PLASTIC, CFrame.new(0, -0.2, 0.18))
+	local nozLever = nadd("NozLever", Vector3.new(0.06, 0.22, 0.08), Color3.fromRGB(170, 172, 176), METAL, CFrame.new(0, -0.08, -0.04))
+	local leverW = nozLever:FindFirstChildOfClass("Weld")
+	nadd("NozSpout", Vector3.new(0.55, 0.1, 0.1), Color3.fromRGB(150, 152, 156), METAL, CFrame.new(0, 0.08, -0.62) * ZAX, CYL)
+	nadd("NozCollar", Vector3.new(0.14, 0.2, 0.2), Color3.fromRGB(170, 132, 58), METAL, CFrame.new(0, 0.08, -0.4) * ZAX, CYL)
+	nadd("NozHoseEnd", Vector3.new(0.16, 0.18, 0.18), Color3.fromRGB(170, 132, 58), METAL, CFrame.new(0, 0, 0.46) * ZAX, CYL)
+
+	-- clicking the nozzle (or the PUMP button) is what actually pumps
+	local hl = Instance.new("Highlight")
+	hl.Adornee = nozModel
+	hl.FillTransparency = 1
+	hl.OutlineColor = Color3.fromRGB(255, 160, 50)
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.Enabled = false
+	hl.Parent = nozModel
+	local clickers = {}
+	for _, cp in ipairs({ nozBody, nozGrip }) do
+		cp.CanQuery = true
+		local cd = Instance.new("ClickDetector")
+		cd.MaxActivationDistance = 40
+		cd.Parent = cp
+		table.insert(clickers, cd)
+	end
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText = "Refill flamethrower"
+	prompt.ObjectText = "Fuel station"
+	prompt.HoldDuration = 0.6
+	prompt.MaxActivationDistance = 10
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = pump
+
+	local hoseStart = (base * CFrame.new(1.1, 1.3, 0)).Position
+	local st = {
+		base = base, model = model, prompt = prompt, nozzle = nz, restCF = restCF, hoseStart = hoseStart,
+		statusLbl = statusLbl, litreLbl = litreLbl, lamp = lamp, lampLight = lampLight,
+		state = "idle", ext = 0, added = 0, settle = 3, pending = 0, squeeze = 0,
+		hl = hl, leverW = leverW, leverBase = leverW.C0,
+		rope = newRope(HOSE_POINTS),
+	}
+	st.collide = stationHoseCollide(st)
+	st.segs = ropeMakeSegments(model, HOSE_POINTS - 1, 0.13, Color3.fromRGB(26, 26, 28), PLASTIC)
+	ropeFill(st.rope, hoseStart, (restCF * CFrame.new(0, 0, 0.5)).Position)
+
+	prompt.Triggered:Connect(function() if not CFG.FT.stopped then startRefuel(st) end end)
+	for _, cd in ipairs(clickers) do
+		cd.MouseClick:Connect(function() if not CFG.FT.stopped then pumpClick(st) end end)
+	end
+
+	model.Parent = Workspace
+	table.insert(stations, st)
+	return st
+end
+
+local function placeStationAtPlayer(silent)
+	local root = getRoot()
+	if not root then return end
+	placeStation(root.Position + root.CFrame.LookVector * 11 + root.CFrame.RightVector * 3, root.Position)
+	if not silent then
+		notify("Fuel station", "Placed in front of you. Hold the prompt at the pump.", 3)
+	end
+end
+
+------------------------------------------------------------------ CHARACTER SETUP
+local stationPlaced = false
+local function onCharacter(char)
+	task.wait(0.2)
+	watchContainer(char)
+	watchContainer(player:WaitForChild("Backpack"))
+	task.spawn(function()
+		local waited = 0
+		while not findFlameTool() and waited < 3 do
+			task.wait(0.25)
+			waited += 0.25
+		end
+		if char.Parent and not findFlameTool() then
+			if CFG.FALLBACK_BUILTIN then
+				warn("[Flamethrower] store tool not found in Backpack, building the built-in wand. Put the model in StarterPack.")
+				buildFallbackTool()
+			else
+				notify("Flamethrower", "No flamethrower tool found. Put the model in StarterPack.", 6)
+			end
+		end
+	end)
+	if not stationPlaced and not CFG.LITE then
+		stationPlaced = true
+		task.delay(3, function()
+			if getRoot() then
+				placeStationAtPlayer(true)
+				notify("Fuel station", "There's a station near your spawn. Refill there when you run low.", 5)
+			end
+		end)
+	end
+end
+
+table.insert(CFG.FT.conns, player.CharacterAdded:Connect(onCharacter))
+if player.Character then task.spawn(onCharacter, player.Character) end
+
+------------------------------------------------------------------ NPC SPAWNER
+local function spawnNPC()
+	local root = getRoot()
+	if not root then return end
+
+	for i = #spawned, 1, -1 do
+		if not spawned[i].Parent then table.remove(spawned, i) end
+	end
+	if #spawned >= CFG.MAX_NPCS then
+		notify("NPC limit", "Max " .. CFG.MAX_NPCS .. ". Clear some first.", 3)
+		return
+	end
+
+	local ok, model = pcall(function()
+		return Players:CreateHumanoidModelFromUserId(player.UserId)
+	end)
+	if not ok or not model then
+		notify("Spawn failed", "Couldn't load your avatar.", 3)
+		return
+	end
+
+	model.Name = "NPC"
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.DisplayName = "NPC"
+		hum.MaxHealth = 100
+		hum.Health = 100
+		hum.BreakJointsOnDeath = false
+		hum.RequiresNeck = false
+		hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+		hum.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOn
+		hum.HealthDisplayDistance = 100
+		hum.NameDisplayDistance = 100
+	end
+	local pos = root.Position + root.CFrame.LookVector * (10 + math.random() * 4) + root.CFrame.RightVector * (math.random() - 0.5) * 8
+	local g = groundAt(pos)
+	local spawnPos = g + Vector3.new(0, 3.5, 0)
+	model:PivotTo(CFrame.lookAt(spawnPos, Vector3.new(root.Position.X, spawnPos.Y, root.Position.Z)))
+	model.Parent = Workspace
+	table.insert(spawned, model)
+	task.delay(0.3, function() if model.Parent then say(model, "hello") end end)
+
+	playSoundAt(model:FindFirstChild("HumanoidRootPart") or root, CFG.SOUNDS.SPAWN, { Volume = 0.7 })
+end
+
+local function clearNPCs()
+	for _, m in ipairs(spawned) do
+		local s = burning[m]
+		if s then
+			removeFire(s)
+			burning[m] = nil
+		end
+		if m.Parent then m:Destroy() end
+	end
+	spawned = {}
+	for _, it in ipairs(fxItems) do
+		if it.part.Parent then it.part:Destroy() end
+	end
+	table.clear(fxItems)
+	notify("Cleared", "NPCs and blood removed.", 2)
+end
+
+------------------------------------------------------------------ NPC ANIMATIONS (your own animations)
+-- Reads the animation ids from YOUR character's Animate script (idle / walk / run / jump / fall) and plays
+-- them on every spawned NPC, so they move exactly like you. No Animate script found -> the old built-in walk is used.
+do
+	local rigs = setmetatable({}, { __mode = "k" })
+	local idsCache
+
+	local function readIds()
+		local char = getChar()
+		local animate = char and char:FindFirstChild("Animate")
+		if animate then
+			local ids, any = {}, false
+			for _, group in ipairs(animate:GetChildren()) do
+				local list = {}
+				for _, a in ipairs(group:GetChildren()) do
+					if a:IsA("Animation") and a.AnimationId ~= "" then table.insert(list, a.AnimationId) end
+				end
+				if #list > 0 then
+					ids[string.lower(group.Name)] = list
+					any = true
+				end
+			end
+			if any then idsCache = ids end
+		end
+		return idsCache
+	end
+
+	local function build(hum)
+		local ids = readIds()
+		if not ids then return nil end
+		local animator = hum:FindFirstChildOfClass("Animator")
+		if not animator then
+			animator = Instance.new("Animator")
+			animator.Parent = hum
+		end
+		local tracks = {}
+		local function load(name, priority, looped)
+			local list = ids[name]
+			if not list then return end
+			local a = Instance.new("Animation")
+			a.AnimationId = list[1]
+			local ok, tr = pcall(function() return animator:LoadAnimation(a) end)
+			if ok and tr then
+				tr.Looped = looped
+				tr.Priority = priority
+				tracks[name] = tr
+			end
+		end
+		load("idle", Enum.AnimationPriority.Idle, true)
+		load("walk", Enum.AnimationPriority.Core, true)
+		load("run", Enum.AnimationPriority.Core, true)
+		load("jump", Enum.AnimationPriority.Action, false)
+		load("fall", Enum.AnimationPriority.Action, true)
+		if next(tracks) == nil then return nil end
+		return { tracks = tracks }
+	end
+
+	local FALLBACK = { run = { "run", "walk", "idle" }, walk = { "walk", "run", "idle" }, idle = { "idle" }, fall = { "fall", "jump", "idle" } }
+
+	local function play(r, want, speed)
+		local name
+		for _, n in ipairs(FALLBACK[want]) do
+			if r.tracks[n] then name = n break end
+		end
+		if not name then return end
+		if r.cur ~= name then
+			if r.cur and r.tracks[r.cur] then r.tracks[r.cur]:Stop(0.2) end
+			r.cur = name
+			r.tracks[name]:Play(0.2)
+		end
+		if name == "walk" or name == "run" then
+			r.tracks[name]:AdjustSpeed(math.clamp(speed / 14.5, 0.3, 2.2))
+		end
+	end
+
+	local function stopAll(r)
+		if r.cur and r.tracks[r.cur] then r.tracks[r.cur]:Stop(0.1) end
+		r.cur = nil
+	end
+
+	RunService.Heartbeat:Connect(function()
+		local now = os.clock()
+		for _, m in ipairs(spawned) do
+			local hum = m.Parent and m:FindFirstChildOfClass("Humanoid")
+			local root = m:FindFirstChild("HumanoidRootPart")
+			if hum and root then
+				local r = rigs[m]
+				if r == nil or (r.retry and now > r.retry) then
+					r = build(hum) or { retry = now + 2 }
+					rigs[m] = r
+				end
+				if r.tracks then
+					local posed = CFG.isPosed and CFG.isPosed(m)
+					-- burning NPCs keep the arms-up panic pose of the full version
+					if hum.Health <= 0 or ragdollData[m] or posed or (burning[m] and not CFG.LITE) then
+						if r.cur then stopAll(r) end
+						CFG.animActive[m] = nil
+					else
+						CFG.animActive[m] = true
+						local v = root.AssemblyLinearVelocity
+						local sp = Vector3.new(v.X, 0, v.Z).Magnitude
+						local want = "idle"
+						if hum.FloorMaterial == Enum.Material.Air then
+							want = "fall"
+						elseif sp > 14 then
+							want = "run"
+						elseif sp > 0.8 then
+							want = "walk"
+						end
+						play(r, want, sp)
+					end
+				end
+			end
+		end
+	end)
+end
+
+------------------------------------------------------------------ UI
+local BG = Color3.fromRGB(24, 24, 24)
+local BAR = Color3.fromRGB(40, 40, 40)
+local LINE = Color3.fromRGB(78, 78, 78)
+local BTN = Color3.fromRGB(44, 44, 44)
+local BTN_HOVER = Color3.fromRGB(64, 64, 64)
+local TXT = Color3.fromRGB(214, 214, 214)
+local DIM = Color3.fromRGB(128, 128, 128)
+local ON = Color3.fromRGB(130, 205, 130)
+local OFF = Color3.fromRGB(205, 100, 90)
+local FONT = Enum.Font.Code
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "FlamethrowerUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Enabled = crosshairWanted > 0      -- hidden until the flamethrower is equipped
+CFG.setMenuVisible = function(v) gui.Enabled = v end
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local function clampToScreen(frame)
+	local ap, as, vs = frame.AbsolutePosition, frame.AbsoluteSize, gui.AbsoluteSize
+	local cx = math.clamp(ap.X, 0, math.max(vs.X - as.X, 0))
+	local cy = math.clamp(ap.Y, 0, math.max(vs.Y - as.Y, 0))
+	if cx ~= ap.X or cy ~= ap.Y then
+		frame.Position = frame.Position + UDim2.fromOffset(cx - ap.X, cy - ap.Y)
+	end
+end
+
+-- drag a window by its title bar (mouse or touch)
+local function makeDraggable(handle, target)
+	local dragging, dragStart, startPos = false, nil, nil
+	handle.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = target.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then dragging = false end
+			end)
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local d = input.Position - dragStart
+			target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+			clampToScreen(target)
+		end
+	end)
+end
+
+local function label(parent, text, color, align)
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Text = text
+	l.TextColor3 = color or TXT
+	l.Font = FONT
+	l.TextSize = 14
+	l.TextXAlignment = align or Enum.TextXAlignment.Left
+	l.Parent = parent
+	return l
+end
+
+local function flatButton(parent, text)
+	local b = Instance.new("TextButton")
+	b.BackgroundColor3 = BTN
+	b.BorderSizePixel = 1
+	b.BorderColor3 = LINE
+	b.AutoButtonColor = false
+	b.Text = text
+	b.TextColor3 = TXT
+	b.Font = FONT
+	b.TextSize = 14
+	b.Parent = parent
+	b.MouseEnter:Connect(function() b.BackgroundColor3 = BTN_HOVER end)
+	b.MouseLeave:Connect(function() b.BackgroundColor3 = BTN end)
+	return b
+end
+
+local function makeWindow(title, width, pos)
+	local w = Instance.new("Frame")
+	w.Position = pos
+	w.Size = UDim2.fromOffset(width, 100)
+	w.BackgroundColor3 = BG
+	w.BorderSizePixel = 1
+	w.BorderColor3 = LINE
+	w.Parent = gui
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.new(1, 0, 0, 22)
+	bar.BackgroundColor3 = BAR
+	bar.BorderSizePixel = 0
+	bar.Parent = w
+	local t = label(bar, title, TXT)
+	t.Size = UDim2.new(1, -30, 1, 0)
+	t.Position = UDim2.fromOffset(7, 0)
+	local body = Instance.new("ScrollingFrame")
+	body.Position = UDim2.fromOffset(0, 22)
+	body.Size = UDim2.new(1, 0, 1, -22)
+	body.BackgroundTransparency = 1
+	body.BorderSizePixel = 0
+	body.ScrollBarThickness = 4
+	body.ScrollingDirection = Enum.ScrollingDirection.Y
+	body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	body.CanvasSize = UDim2.new()
+	body.Parent = w
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop, pad.PaddingBottom = UDim.new(0, 7), UDim.new(0, 7)
+	pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 7), UDim.new(0, 7)
+	pad.Parent = body
+	local list = Instance.new("UIListLayout")
+	list.Padding = UDim.new(0, 4)
+	list.SortOrder = Enum.SortOrder.LayoutOrder
+	list.Parent = body
+	makeDraggable(bar, w)
+	return w, bar, body, list
+end
+
+local popup -- built further down
+do -- main window (own scope: Luau allows only 200 top-level locals)
+local order = 0
+local function nextOrder() order += 1 return order end
+
+------------------------------------------------ main window
+local win, bar, body, list = makeWindow(CFG.LITE and "flamethrower - lite" or "flamethrower - monkey", 214, UDim2.new(1, -226, 0.3, 0))
+
+local minBtn = flatButton(bar, "_")
+minBtn.AnchorPoint = Vector2.new(1, 0.5)
+minBtn.Position = UDim2.new(1, -3, 0.5, 0)
+minBtn.Size = UDim2.fromOffset(20, 16)
+
+local function header(text)
+	local h = label(body, text, DIM)
+	h.LayoutOrder = nextOrder()
+	h.Size = UDim2.new(1, 0, 0, 16)
+	return h
+end
+local function action(text, callback)
+	local b = flatButton(body, text)
+	b.LayoutOrder = nextOrder()
+	b.Size = UDim2.new(1, 0, 0, 24)
+	b.MouseButton1Click:Connect(callback)
+	return b
+end
+local function toggle(text, get, set)
+	local b = flatButton(body, "")
+	b.LayoutOrder = nextOrder()
+	b.Size = UDim2.new(1, 0, 0, 24)
+	local name = label(b, text, TXT)
+	name.Size = UDim2.new(1, -50, 1, 0)
+	name.Position = UDim2.fromOffset(7, 0)
+	local state = label(b, "", TXT, Enum.TextXAlignment.Right)
+	state.Size = UDim2.new(0, 44, 1, 0)
+	state.Position = UDim2.new(1, -50, 0, 0)
+	local function refresh()
+		local on = get()
+		state.Text = on and "[on]" or "[off]"
+		state.TextColor3 = on and ON or OFF
+	end
+	b.MouseButton1Click:Connect(function()
+		set(not get())
+		refresh()
+	end)
+	refresh()
+end
+
+header("npcs")
+action("spawn npc", spawnNPC)
+action("clear npcs", clearNPCs)
+if not CFG.LITE then
+	header("world")
+	action("place fuel station", function() placeStationAtPlayer(false) end)
+end
+header("options")
+if not CFG.LITE then
+	toggle("blood", function() return CFG.BLOOD end, function(v) CFG.BLOOD = v end)
+end
+toggle("two hands", function() return CFG.TWO_HANDS end, function(v) CFG.TWO_HANDS = v end)
+toggle("blue flames", function() return CFG.BLUE_FLAME end, function(v) CFG.BLUE_FLAME = v end)
+toggle("fire spread", function() return CFG.SPREAD end, function(v) CFG.SPREAD = v end)
+toggle("napalm", function() return CFG.NAPALM end, function(v) CFG.NAPALM = v end)
+if not CFG.LITE then
+	toggle("overheat", function() return CFG.HEAT.ENABLED ~= false end, function(v) CFG.HEAT.ENABLED = v end)
+	toggle("begging scene", function() return CFG.BEG.ENABLED ~= false end, function(v) CFG.BEG.ENABLED = v end)
+	toggle("kneel when begging", function() return CFG.BEG.KNEEL == true end, function(v) CFG.BEG.KNEEL = v end)
+	toggle("dark movie look", function() return CFG.BEG.CINEMATIC ~= false end, function(v) CFG.BEG.CINEMATIC = v end)
+end
+local stats = label(body, "", DIM)
+stats.LayoutOrder = nextOrder()
+stats.Size = UDim2.new(1, 0, 0, 30)
+stats.TextYAlignment = Enum.TextYAlignment.Top
+stats.TextWrapped = true
+
+action("credits", function()
+	if popup then popup.Visible = not popup.Visible end
+end)
+
+local function refreshStats()
+	if CFG.LITE then
+		stats.Text = string.format("burned: %d\nm = minimize, drag title to move", kills)
+	else
+		stats.Text = string.format("burned: %d   fuel: %d%%\nm = minimize, drag title to move", kills, math.floor(fuel / CFG.FUEL_MAX * 100 + 0.5))
+	end
+end
+updateKillLabel = refreshStats
+local baseUpdateFuel = updateFuelUI
+updateFuelUI = function()
+	baseUpdateFuel()
+	refreshStats()
+end
+refreshStats()
+
+-- minimize (to a small square) and resize
+local minimized = false
+local userSized = false
+local fullW, fullH = 214, 200
+local MIN_W, MIN_H, MAX_W, MAX_H = 170, 110, 520, 640
+local SQUARE = 36
+local titleLbl = bar:FindFirstChildOfClass("TextLabel")
+
+local squareLbl = label(bar, "FT", TXT, Enum.TextXAlignment.Center)
+squareLbl.Size = UDim2.fromScale(1, 1)
+squareLbl.Visible = false
+
+local function applySize()
+	if minimized then
+		win.Size = UDim2.fromOffset(SQUARE, SQUARE)
+	else
+		win.Size = UDim2.fromOffset(fullW, fullH)
+	end
+end
+
+local grip = Instance.new("TextButton")
+grip.Name = "ResizeGrip"
+grip.AnchorPoint = Vector2.new(1, 1)
+grip.Position = UDim2.fromScale(1, 1)
+grip.Size = UDim2.fromOffset(20, 20)
+grip.BackgroundTransparency = 1
+grip.Text = ""
+grip.AutoButtonColor = false
+grip.ZIndex = 5
+grip.Parent = win
+for i, len in ipairs({ 14, 9, 4 }) do
+	local line = Instance.new("Frame")
+	line.AnchorPoint = Vector2.new(0.5, 0.5)
+	line.Size = UDim2.fromOffset(len, 2)
+	line.Position = UDim2.new(1, -9 + (i - 1) * 3, 1, -9 + (i - 1) * 3)
+	line.Rotation = -45
+	line.BackgroundColor3 = DIM
+	line.BorderSizePixel = 0
+	line.ZIndex = 5
+	line.Parent = win
+end
+
+local rsDrag, rsStart, rsSize = false, nil, nil
+grip.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		rsDrag = true
+		rsStart = input.Position
+		rsSize = win.AbsoluteSize
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then rsDrag = false end
+		end)
+	end
+end)
+UserInputService.InputChanged:Connect(function(input)
+	if rsDrag and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local d = input.Position - rsStart
+		fullW = math.clamp(rsSize.X + d.X, MIN_W, MAX_W)
+		fullH = math.clamp(rsSize.Y + d.Y, MIN_H, MAX_H)
+		userSized = true
+		applySize()
+		clampToScreen(win)
+	end
+end)
+
+list:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	if not userSized then
+		fullH = math.clamp(list.AbsoluteContentSize.Y + 14 + 22, MIN_H, MAX_H)
+		applySize()
+	end
+	clampToScreen(win)
+end)
+
+local function setMinimized(v)
+	minimized = v
+	body.Visible = not v
+	grip.Visible = not v
+	minBtn.Visible = not v
+	if titleLbl then titleLbl.Visible = not v end
+	squareLbl.Visible = v
+	for _, c in ipairs(win:GetChildren()) do
+		if c:IsA("Frame") and c ~= bar and c ~= body then c.Visible = not v end
+	end
+	bar.Size = v and UDim2.fromScale(1, 1) or UDim2.new(1, 0, 0, 22)
+	applySize()
+	clampToScreen(win)
+end
+
+-- tap the square (without dragging it) to open the window again
+do
+	local tapAt
+	bar.InputBegan:Connect(function(input)
+		if not minimized then return end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			tapAt = input.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					if minimized and tapAt and (input.Position - tapAt).Magnitude < 6 then
+						setMinimized(false)
+					end
+					tapAt = nil
+				end
+			end)
+		end
+	end)
+end
+
+task.defer(function()
+	if not userSized then
+		fullH = math.clamp(list.AbsoluteContentSize.Y + 14 + 22, MIN_H, MAX_H)
+	end
+	applySize()
+end)
+minBtn.MouseButton1Click:Connect(function() setMinimized(true) end)
+UserInputService.InputBegan:Connect(function(input, processed)
+	if not processed and gui.Enabled and input.KeyCode == Enum.KeyCode.M then setMinimized(not minimized) end
+end)
+
+end -- main window
+
+------------------------------------------------ credits window
+do
+local pw, pbar, pbody = makeWindow("credits", 270, UDim2.new(0.5, -135, 0.5, -70))
+popup = pw
+popup.Visible = false
+local closeBtn = flatButton(pbar, "x")
+closeBtn.AnchorPoint = Vector2.new(1, 0.5)
+closeBtn.Position = UDim2.new(1, -3, 0.5, 0)
+closeBtn.Size = UDim2.fromOffset(20, 16)
+closeBtn.MouseButton1Click:Connect(function() popup.Visible = false end)
+
+local pl = label(pbody, "flamethrower, made by DuaKNo & Monkey", TXT)
+pl.LayoutOrder = 1
+pl.Size = UDim2.new(1, 0, 0, 18)
+local invite = Instance.new("TextBox")
+invite.LayoutOrder = 2
+invite.Size = UDim2.new(1, 0, 0, 24)
+invite.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
+invite.BorderSizePixel = 1
+invite.BorderColor3 = LINE
+invite.TextColor3 = TXT
+invite.Font = FONT
+invite.TextSize = 13
+invite.Text = CFG.DISCORD
+invite.ClearTextOnFocus = false
+invite.TextEditable = false
+invite.Parent = pbody
+local copyBtn = flatButton(pbody, "copy discord invite")
+copyBtn.LayoutOrder = 3
+copyBtn.Size = UDim2.new(1, 0, 0, 24)
+copyBtn.MouseButton1Click:Connect(copyDiscord)
+pw.Size = UDim2.fromOffset(270, 22 + 14 + 18 + 24 + 24 + 8)
+
+end -- credits window
+
+-- (the two startup messages are sent through Roblox chat at the top of the script)
+
+-- what the next execution has to undo that only this copy knows about
+table.insert(CFG.FT.cleanups, function()
+	pcall(function() CFG.NET.setActive(false) end)
+	pcall(function() setShiftLock(false) end)
+	for _, m in ipairs(spawned) do
+		pcall(function()
+			local st = burning[m]
+			if st then removeFire(st) end
+			if m.Parent then m:Destroy() end
+		end)
+	end
+	for _, rig in pairs(rigOf) do
+		pcall(function()
+			if rig.model and rig.model.Parent then rig.model:Destroy() end
+		end)
+	end
+	for _, it in ipairs(fxItems) do
+		pcall(function() if it.part.Parent then it.part:Destroy() end end)
+	end
+end)
