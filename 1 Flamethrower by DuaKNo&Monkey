@@ -482,8 +482,9 @@ do
 	end
 end
 
-local ZAX = CFrame.Angles(0, math.rad(90), 0)   -- turns a cylinder (axis X) to point along Z
-local CYL = Enum.PartType.Cylinder
+local K = {}   -- constants live here so the main chunk stays under Luau's 200-local limit
+K.ZAX = CFrame.Angles(0, math.rad(90), 0)   -- turns a cylinder (axis X) to point along Z
+K.CYL = Enum.PartType.Cylinder
 
 ------------------------------------------------------------------ HELPERS
 local function playSoundAt(parent, id, props)
@@ -677,12 +678,12 @@ end
 ------------------------------------------------------------------ TIMED FX (blood, scorch, ground fire)
 -- every item: { part, born, update = function(item, age) -> keepAlive }
 local fxItems = {}
-local MAX_FX = 450
+K.MAX_FX = 450
 
 local function addFx(item)
 	item.born = os.clock()
 	table.insert(fxItems, item)
-	while #fxItems > MAX_FX do
+	while #fxItems > K.MAX_FX do
 		local old = table.remove(fxItems, 1)
 		if old.part and old.part.Parent then old.part:Destroy() end
 		if old.onEnd then old.onEnd(old) end
@@ -711,9 +712,9 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------ BLOOD
-local BLOOD_WET = Color3.fromRGB(150, 8, 8)
-local BLOOD_MID = Color3.fromRGB(94, 10, 9)
-local BLOOD_DRY = Color3.fromRGB(52, 15, 11)
+K.BLOOD_WET = Color3.fromRGB(150, 8, 8)
+K.BLOOD_MID = Color3.fromRGB(94, 10, 9)
+K.BLOOD_DRY = Color3.fromRGB(52, 15, 11)
 
 local function bloodStep(it, age)
 	-- grows for a bit, then slowly turns from bright red to dark brown crust
@@ -722,9 +723,9 @@ local function bloodStep(it, age)
 	it.part.Size = Vector3.new(0.05, math.max(it.sy * g, 0.05), math.max(it.sz * g, 0.05))
 	local c
 	if age < 5 then
-		c = BLOOD_WET:Lerp(BLOOD_MID, age / 5)
+		c = K.BLOOD_WET:Lerp(K.BLOOD_MID, age / 5)
 	else
-		c = BLOOD_MID:Lerp(BLOOD_DRY, math.min((age - 5) / 30, 1))
+		c = K.BLOOD_MID:Lerp(K.BLOOD_DRY, math.min((age - 5) / 30, 1))
 	end
 	it.part.Color = c
 	it.part.Reflectance = 0.28 * (1 - math.min(age / 14, 1))
@@ -762,9 +763,9 @@ local function bloodOnBody(model, prof, big)
 	local d = (big and 0.7 or 0.3) + math.random() * (big and 0.7 or 0.4)
 	local streak = math.random() < 0.5
 	local blob = Instance.new("Part")
-	blob.Shape = CYL
+	blob.Shape = K.CYL
 	blob.Size = Vector3.new(0.05, 0.05, 0.05)
-	blob.Color = BLOOD_WET
+	blob.Color = K.BLOOD_WET
 	blob.Material = Enum.Material.SmoothPlastic
 	blob.Reflectance = 0.28
 	blob.CanCollide = false
@@ -790,7 +791,7 @@ local function bloodOnGround(pos, diameter, growTime, lifetime, ignoreModel)
 	local ignore = { fxFolder }
 	if ignoreModel then table.insert(ignore, ignoreModel) end
 	local g, n = groundAt(pos + Vector3.new(0, 2, 0), ignore)
-	local blob = fxPart(Vector3.new(0.05, 0.05, 0.05), BLOOD_WET, Enum.Material.SmoothPlastic, CYL)
+	local blob = fxPart(Vector3.new(0.05, 0.05, 0.05), K.BLOOD_WET, Enum.Material.SmoothPlastic, K.CYL)
 	blob.CFrame = discCF(g + n * (0.03 + math.random() * 0.02), n, Vector3.new(math.random() - 0.5, 0, math.random() - 0.5))
 	local ratio = 0.7 + math.random() * 0.5
 	addFx({ part = blob, update = bloodStep, grow = growTime or 2, sy = diameter, sz = diameter * ratio, lifetime = lifetime or 120 })
@@ -875,7 +876,7 @@ local function groundFire(pos, normal, napalm, child)
 	})
 
 	-- black mark that stays a while, then fades
-	local mark = fxPart(Vector3.new(0.05, (2.2 + math.random() * 1.4) * scale, (2.2 + math.random() * 1.4) * scale), Color3.fromRGB(12, 12, 12), Enum.Material.Slate, CYL)
+	local mark = fxPart(Vector3.new(0.05, (2.2 + math.random() * 1.4) * scale, (2.2 + math.random() * 1.4) * scale), Color3.fromRGB(12, 12, 12), Enum.Material.Slate, K.CYL)
 	mark.Transparency = 0.3
 	mark.CFrame = discCF(pos + normal * 0.03, normal, Vector3.new(math.random() - 0.5, 0, math.random() - 0.5))
 	addFx({ part = mark, update = function(it, age)
@@ -892,15 +893,15 @@ local ragdollData = setmetatable({}, { __mode = "k" })
 local kills = 0
 local updateKillLabel = function() end
 
-local SKIN_RED = Color3.fromRGB(172, 42, 34)
-local SCORCH = Color3.fromRGB(78, 24, 19)
-local CHAR_BLACK = Color3.fromRGB(13, 12, 12)
+K.SKIN_RED = Color3.fromRGB(172, 42, 34)
+K.SCORCH = Color3.fromRGB(78, 24, 19)
+K.CHAR_BLACK = Color3.fromRGB(13, 12, 12)
 
 local function burnColor(orig, p)
 	if p <= 0 then return orig end
-	if p < 0.35 then return orig:Lerp(SKIN_RED, p / 0.35) end
-	if p < 0.65 then return SKIN_RED:Lerp(SCORCH, (p - 0.35) / 0.3) end
-	return SCORCH:Lerp(CHAR_BLACK, math.min((p - 0.65) / 0.35, 1))
+	if p < 0.35 then return orig:Lerp(K.SKIN_RED, p / 0.35) end
+	if p < 0.65 then return K.SKIN_RED:Lerp(K.SCORCH, (p - 0.35) / 0.3) end
+	return K.SCORCH:Lerp(K.CHAR_BLACK, math.min((p - 0.65) / 0.35, 1))
 end
 
 local function getProfile(model)
@@ -1476,7 +1477,7 @@ local function getMuzzle(tool)
 end
 
 -- world position of the flame tip: built-in muzzle, a named part/attachment, or the far end of the handle
-local TIP_NAMES = { "muzzle", "nozzle", "flamepoint", "firepoint", "firepos", "tip", "spout" }
+K.TIP_NAMES = { "muzzle", "nozzle", "flamepoint", "firepoint", "firepos", "tip", "spout" }
 local function muzzlePoint(tool)
 	local m = muzzleOf[tool]
 	if m and m.Parent then return m.Position end
@@ -1487,7 +1488,7 @@ local function muzzlePoint(tool)
 			local n = string.lower(d.Name)
 			local hit = CFG.MUZZLE_NAME ~= "" and d.Name == CFG.MUZZLE_NAME
 			if not hit and CFG.MUZZLE_NAME == "" then
-				for _, k in ipairs(TIP_NAMES) do
+				for _, k in ipairs(K.TIP_NAMES) do
 					if string.find(n, k, 1, true) then hit = true break end
 				end
 			end
@@ -1830,7 +1831,7 @@ local function ropeMakeSegments(parent, count, thickness, color, mat)
 	for i = 1, count do
 		local s = Instance.new("Part")
 		s.Name = "Seg" .. i
-		s.Shape = CYL
+		s.Shape = K.CYL
 		s.Size = Vector3.new(0.3, thickness, thickness)
 		s.Color = color
 		s.Material = mat or Enum.Material.SmoothPlastic
@@ -1853,25 +1854,25 @@ local function ropeRender(r, segs, thickness)
 		local len = (pb - pa).Magnitude
 		if len > 0.001 then
 			segs[i].Size = Vector3.new(len + 0.03, thickness, thickness)
-			segs[i].CFrame = CFrame.lookAt((pa + pb) / 2, pb) * ZAX
+			segs[i].CFrame = CFrame.lookAt((pa + pb) / 2, pb) * K.ZAX
 		end
 	end
 end
 
 ------------------------------------------------------------------ BUILT-IN FLAMETHROWER (wand + banded tank + hose)
-local GUNMETAL = Color3.fromRGB(40, 42, 46)
-local BLACK = Color3.fromRGB(22, 22, 25)
-local STEEL = Color3.fromRGB(92, 95, 100)
-local WOOD = Color3.fromRGB(84, 56, 34)
-local TAN = Color3.fromRGB(178, 154, 102)
-local BRASS = Color3.fromRGB(170, 132, 58)
+K.GUNMETAL = Color3.fromRGB(40, 42, 46)
+K.BLACK = Color3.fromRGB(22, 22, 25)
+K.STEEL = Color3.fromRGB(92, 95, 100)
+K.WOOD = Color3.fromRGB(84, 56, 34)
+K.TAN = Color3.fromRGB(178, 154, 102)
+K.BRASS = Color3.fromRGB(170, 132, 58)
 local GREEN = Color3.fromRGB(80, 210, 90)
-local AMBER = Color3.fromRGB(255, 180, 30)
-local RED = Color3.fromRGB(225, 55, 45)
-local HOT = Color3.fromRGB(255, 120, 20)
-local PIVOT = CFrame.new(0.5, 0.62, -0.15)        -- shoulder-height point the gun swings around, arms reach out to it
-local TANK_C0 = CFrame.new(0, -0.05, 1.06)       -- tank centre behind the torso
-local PORT_LOCAL = CFrame.new(0.62, 0.55, 0)     -- fuel port on the tank, faces right
+K.AMBER = Color3.fromRGB(255, 180, 30)
+K.RED = Color3.fromRGB(225, 55, 45)
+K.HOT = Color3.fromRGB(255, 120, 20)
+K.PIVOT = CFrame.new(0.5, 0.62, -0.15)        -- shoulder-height point the gun swings around, arms reach out to it
+K.TANK_C0 = CFrame.new(0, -0.05, 1.06)       -- tank centre behind the torso
+K.PORT_LOCAL = CFrame.new(0.62, 0.55, 0)     -- fuel port on the tank, faces right
 
 local function mkPart(parent, name, size, color, mat, shape)
 	local p = Instance.new("Part")
@@ -1960,7 +1961,7 @@ end
 updateFuelUI = function()
 	local f = math.clamp(fuel / CFG.FUEL_MAX, 0, 1)
 	local lowFrac = CFG.FUEL_LOW / CFG.FUEL_MAX
-	local col = f > 0.5 and GREEN or (f > lowFrac and AMBER or RED)
+	local col = f > 0.5 and GREEN or (f > lowFrac and K.AMBER or K.RED)
 	fuelFill.Size = UDim2.fromScale(f, 1)
 	fuelFill.BackgroundColor3 = col
 	local tag = ""
@@ -2008,10 +2009,10 @@ local function buildRig(char, torso, r15)
 	hoseModel.Name = "Hose"
 
 	------------- back tank (always worn)
-	local root = mkPart(model, "TankRoot", Vector3.new(0.2, 0.2, 0.2), BLACK, Enum.Material.Metal)
+	local root = mkPart(model, "TankRoot", Vector3.new(0.2, 0.2, 0.2), K.BLACK, Enum.Material.Metal)
 	root.Transparency = 1
-	weldTo(torso, root, TANK_C0)
-	root.CFrame = torso.CFrame * TANK_C0
+	weldTo(torso, root, K.TANK_C0)
+	root.CFrame = torso.CFrame * K.TANK_C0
 
 	local function addT(name, size, color, mat, offset, shape, reflect)
 		local p = mkPart(model, name, size, color, mat, shape)
@@ -2023,23 +2024,23 @@ local function buildRig(char, torso, r15)
 	local UP = CFrame.Angles(0, 0, math.rad(90))   -- cylinder axis pointing up
 	local TANKCOL = Color3.fromRGB(24, 24, 27)
 
-	addT("Tank", Vector3.new(1.9, 1.05, 1.05), TANKCOL, Enum.Material.Metal, UP, CYL, 0.16)
+	addT("Tank", Vector3.new(1.9, 1.05, 1.05), TANKCOL, Enum.Material.Metal, UP, K.CYL, 0.16)
 	addT("DomeTop", Vector3.new(1.05, 1.05, 1.05), TANKCOL, Enum.Material.Metal, CFrame.new(0, 0.95, 0), Enum.PartType.Ball, 0.2)
 	addT("DomeBottom", Vector3.new(1.05, 1.05, 1.05), TANKCOL, Enum.Material.Metal, CFrame.new(0, -0.95, 0), Enum.PartType.Ball, 0.2)
 	for i, y in ipairs({ 0.62, 0, -0.62 }) do
-		addT("Band" .. i, Vector3.new(0.26, 1.09, 1.09), TAN, Enum.Material.Metal, CFrame.new(0, y, 0) * UP, CYL, 0.05)
+		addT("Band" .. i, Vector3.new(0.26, 1.09, 1.09), K.TAN, Enum.Material.Metal, CFrame.new(0, y, 0) * UP, K.CYL, 0.05)
 	end
-	addT("ValveStem", Vector3.new(0.3, 0.26, 0.26), STEEL, Enum.Material.Metal, CFrame.new(0, 1.5, 0) * UP, CYL)
-	addT("ValveWheel", Vector3.new(0.07, 0.62, 0.62), RED, Enum.Material.Metal, CFrame.new(0, 1.68, 0) * UP, CYL)
+	addT("ValveStem", Vector3.new(0.3, 0.26, 0.26), K.STEEL, Enum.Material.Metal, CFrame.new(0, 1.5, 0) * UP, K.CYL)
+	addT("ValveWheel", Vector3.new(0.07, 0.62, 0.62), K.RED, Enum.Material.Metal, CFrame.new(0, 1.68, 0) * UP, K.CYL)
 	-- fuel port on the right side (the pump nozzle clicks in here)
-	addT("PortCollar", Vector3.new(0.26, 0.36, 0.36), STEEL, Enum.Material.Metal, PORT_LOCAL, CYL)
-	addT("PortLip", Vector3.new(0.07, 0.44, 0.44), BRASS, Enum.Material.Metal, CFrame.new(0.76, 0.55, 0), CYL)
+	addT("PortCollar", Vector3.new(0.26, 0.36, 0.36), K.STEEL, Enum.Material.Metal, K.PORT_LOCAL, K.CYL)
+	addT("PortLip", Vector3.new(0.07, 0.44, 0.44), K.BRASS, Enum.Material.Metal, CFrame.new(0.76, 0.55, 0), K.CYL)
 	-- hose fitting at the front of the tank
-	addT("HoseFit", Vector3.new(0.2, 0.2, 0.2), BRASS, Enum.Material.Metal, CFrame.new(0.45, -0.1, -0.25), Enum.PartType.Ball)
+	addT("HoseFit", Vector3.new(0.2, 0.2, 0.2), K.BRASS, Enum.Material.Metal, CFrame.new(0.45, -0.1, -0.25), Enum.PartType.Ball)
 	-- pressure gauge on the back, needle moves with the fuel level
-	addT("GaugeRim", Vector3.new(0.06, 0.5, 0.5), BRASS, Enum.Material.Metal, CFrame.new(0, 0.25, 0.52) * ZAX, CYL)
-	addT("GaugeFace", Vector3.new(0.04, 0.42, 0.42), Color3.fromRGB(226, 220, 200), Enum.Material.SmoothPlastic, CFrame.new(0, 0.25, 0.555) * ZAX, CYL)
-	addT("GaugeRed", Vector3.new(0.03, 0.07, 0.02), RED, Enum.Material.SmoothPlastic, CFrame.new(-0.15, 0.13, 0.572))
+	addT("GaugeRim", Vector3.new(0.06, 0.5, 0.5), K.BRASS, Enum.Material.Metal, CFrame.new(0, 0.25, 0.52) * K.ZAX, K.CYL)
+	addT("GaugeFace", Vector3.new(0.04, 0.42, 0.42), Color3.fromRGB(226, 220, 200), Enum.Material.SmoothPlastic, CFrame.new(0, 0.25, 0.555) * K.ZAX, K.CYL)
+	addT("GaugeRed", Vector3.new(0.03, 0.07, 0.02), K.RED, Enum.Material.SmoothPlastic, CFrame.new(-0.15, 0.13, 0.572))
 	local needleBase = CFrame.new(0, 0.25, 0.578)
 	local needle = addT("Needle", Vector3.new(0.025, 0.19, 0.02), Color3.fromRGB(190, 30, 25), Enum.Material.SmoothPlastic, needleBase * CFrame.new(0, 0.09, 0))
 	local needleW = needle:FindFirstChildOfClass("Weld")
@@ -2052,7 +2053,7 @@ local function buildRig(char, torso, r15)
 		return p
 	end
 	strap("Belt", Vector3.new(2.12, 0.22, 1.1), CFrame.new(0, -0.5, 0))
-	strap("Buckle", Vector3.new(0.3, 0.26, 0.06), CFrame.new(0, -0.5, -0.56), BRASS, Enum.Material.Metal)
+	strap("Buckle", Vector3.new(0.3, 0.26, 0.06), CFrame.new(0, -0.5, -0.56), K.BRASS, Enum.Material.Metal)
 	for _, sx in ipairs({ -0.55, 0.55 }) do
 		strap("StrapFront", Vector3.new(0.24, 1.5, 0.1), CFrame.new(sx, 0.05, -0.54))
 		strap("StrapBack", Vector3.new(0.24, 1.5, 0.1), CFrame.new(sx, 0.05, 0.54))
@@ -2060,9 +2061,9 @@ local function buildRig(char, torso, r15)
 	end
 
 	------------- the gun
-	local body = mkPart(gun, "Body", Vector3.new(0.36, 0.46, 1.3), GUNMETAL, Enum.Material.Metal)
+	local body = mkPart(gun, "Body", Vector3.new(0.36, 0.46, 1.3), K.GUNMETAL, Enum.Material.Metal)
 	body.Anchored = true
-	body.CFrame = torso.CFrame * PIVOT
+	body.CFrame = torso.CFrame * K.PIVOT
 
 	local function add(name, size, color, mat, offset, shape, reflect)
 		local p = mkPart(gun, name, size, color, mat, shape)
@@ -2072,29 +2073,29 @@ local function buildRig(char, torso, r15)
 		return p
 	end
 
-	add("TopRail", Vector3.new(0.2, 0.08, 1.1), STEEL, Enum.Material.Metal, CFrame.new(0, 0.27, 0))
-	add("Cover", Vector3.new(0.38, 0.28, 0.45), BLACK, Enum.Material.Metal, CFrame.new(0, 0.02, -0.15))
-	add("Stock", Vector3.new(0.3, 0.5, 0.6), WOOD, Enum.Material.Wood, CFrame.new(0, -0.05, 0.95))
-	add("ButtPad", Vector3.new(0.32, 0.54, 0.08), BLACK, Enum.Material.SmoothPlastic, CFrame.new(0, -0.05, 1.29))
-	add("PistolGrip", Vector3.new(0.3, 0.75, 0.36), BLACK, Enum.Material.SmoothPlastic, CFrame.new(0, -0.62, 0.6) * CFrame.Angles(math.rad(-12), 0, 0))
-	add("GuardFront", Vector3.new(0.06, 0.3, 0.06), STEEL, Enum.Material.Metal, CFrame.new(0, -0.4, 0.05))
-	add("GuardBottom", Vector3.new(0.06, 0.06, 0.42), STEEL, Enum.Material.Metal, CFrame.new(0, -0.55, 0.25))
-	add("Trigger", Vector3.new(0.07, 0.2, 0.08), STEEL, Enum.Material.Metal, CFrame.new(0, -0.42, 0.25))
-	add("Foregrip", Vector3.new(0.26, 0.5, 0.26), BLACK, Enum.Material.SmoothPlastic, CFrame.new(0, -0.45, -0.4))
+	add("TopRail", Vector3.new(0.2, 0.08, 1.1), K.STEEL, Enum.Material.Metal, CFrame.new(0, 0.27, 0))
+	add("Cover", Vector3.new(0.38, 0.28, 0.45), K.BLACK, Enum.Material.Metal, CFrame.new(0, 0.02, -0.15))
+	add("Stock", Vector3.new(0.3, 0.5, 0.6), K.WOOD, Enum.Material.Wood, CFrame.new(0, -0.05, 0.95))
+	add("ButtPad", Vector3.new(0.32, 0.54, 0.08), K.BLACK, Enum.Material.SmoothPlastic, CFrame.new(0, -0.05, 1.29))
+	add("PistolGrip", Vector3.new(0.3, 0.75, 0.36), K.BLACK, Enum.Material.SmoothPlastic, CFrame.new(0, -0.62, 0.6) * CFrame.Angles(math.rad(-12), 0, 0))
+	add("GuardFront", Vector3.new(0.06, 0.3, 0.06), K.STEEL, Enum.Material.Metal, CFrame.new(0, -0.4, 0.05))
+	add("GuardBottom", Vector3.new(0.06, 0.06, 0.42), K.STEEL, Enum.Material.Metal, CFrame.new(0, -0.55, 0.25))
+	add("Trigger", Vector3.new(0.07, 0.2, 0.08), K.STEEL, Enum.Material.Metal, CFrame.new(0, -0.42, 0.25))
+	add("Foregrip", Vector3.new(0.26, 0.5, 0.26), K.BLACK, Enum.Material.SmoothPlastic, CFrame.new(0, -0.45, -0.4))
 	-- wooden handguard, long steel wand, igniter, nozzle
-	add("Handguard", Vector3.new(1.0, 0.46, 0.46), WOOD, Enum.Material.Wood, CFrame.new(0, 0, -1.15) * ZAX, CYL)
-	add("GuardRingA", Vector3.new(0.06, 0.5, 0.5), STEEL, Enum.Material.Metal, CFrame.new(0, 0, -0.68) * ZAX, CYL)
-	add("GuardRingB", Vector3.new(0.06, 0.5, 0.5), STEEL, Enum.Material.Metal, CFrame.new(0, 0, -1.62) * ZAX, CYL)
-	add("Wand", Vector3.new(1.45, 0.17, 0.17), STEEL, Enum.Material.Metal, CFrame.new(0, 0, -2.3) * ZAX, CYL, 0.1)
+	add("Handguard", Vector3.new(1.0, 0.46, 0.46), K.WOOD, Enum.Material.Wood, CFrame.new(0, 0, -1.15) * K.ZAX, K.CYL)
+	add("GuardRingA", Vector3.new(0.06, 0.5, 0.5), K.STEEL, Enum.Material.Metal, CFrame.new(0, 0, -0.68) * K.ZAX, K.CYL)
+	add("GuardRingB", Vector3.new(0.06, 0.5, 0.5), K.STEEL, Enum.Material.Metal, CFrame.new(0, 0, -1.62) * K.ZAX, K.CYL)
+	add("Wand", Vector3.new(1.45, 0.17, 0.17), K.STEEL, Enum.Material.Metal, CFrame.new(0, 0, -2.3) * K.ZAX, K.CYL, 0.1)
 	for i, z in ipairs({ -1.95, -2.35, -2.7 }) do
-		add("WandRing" .. i, Vector3.new(0.07, 0.26, 0.26), GUNMETAL, Enum.Material.Metal, CFrame.new(0, 0, z) * ZAX, CYL)
+		add("WandRing" .. i, Vector3.new(0.07, 0.26, 0.26), K.GUNMETAL, Enum.Material.Metal, CFrame.new(0, 0, z) * K.ZAX, K.CYL)
 	end
-	add("NozzleHead", Vector3.new(0.4, 0.34, 0.34), GUNMETAL, Enum.Material.Metal, CFrame.new(0, 0, -2.95) * ZAX, CYL)
-	add("NozzleLip", Vector3.new(0.08, 0.42, 0.42), BLACK, Enum.Material.Metal, CFrame.new(0, 0, -3.16) * ZAX, CYL)
-	local glow = add("NozzleGlow", Vector3.new(0.03, 0.28, 0.28), HOT, Enum.Material.Neon, CFrame.new(0, 0, -3.2) * ZAX, CYL)
+	add("NozzleHead", Vector3.new(0.4, 0.34, 0.34), K.GUNMETAL, Enum.Material.Metal, CFrame.new(0, 0, -2.95) * K.ZAX, K.CYL)
+	add("NozzleLip", Vector3.new(0.08, 0.42, 0.42), K.BLACK, Enum.Material.Metal, CFrame.new(0, 0, -3.16) * K.ZAX, K.CYL)
+	local glow = add("NozzleGlow", Vector3.new(0.03, 0.28, 0.28), K.HOT, Enum.Material.Neon, CFrame.new(0, 0, -3.2) * K.ZAX, K.CYL)
 	glow.Transparency = 0.9
-	add("Igniter", Vector3.new(0.12, 0.14, 0.45), GUNMETAL, Enum.Material.Metal, CFrame.new(0, 0.2, -2.75))
-	add("HoseFitGun", Vector3.new(0.17, 0.17, 0.17), BRASS, Enum.Material.Metal, CFrame.new(0.27, -0.08, -0.82), Enum.PartType.Ball)
+	add("Igniter", Vector3.new(0.12, 0.14, 0.45), K.GUNMETAL, Enum.Material.Metal, CFrame.new(0, 0.2, -2.75))
+	add("HoseFitGun", Vector3.new(0.17, 0.17, 0.17), K.BRASS, Enum.Material.Metal, CFrame.new(0.27, -0.08, -0.82), Enum.PartType.Ball)
 	local led = add("StatusLED", Vector3.new(0.08, 0.08, 0.08), GREEN, Enum.Material.Neon, CFrame.new(0, 0.32, 0.45), Enum.PartType.Ball)
 
 	-- pilot flame at the igniter
@@ -2129,7 +2130,7 @@ local function buildRig(char, torso, r15)
 	local segs = ropeMakeSegments(hoseModel, HOSE_N - 1, 0.1, hoseCol, Enum.Material.Fabric)
 	local ends = {}
 	for i = 1, 2 do
-		local f = mkPart(hoseModel, "HoseEnd" .. i, Vector3.new(0.24, 0.16, 0.16), BRASS, Enum.Material.Metal, CYL)
+		local f = mkPart(hoseModel, "HoseEnd" .. i, Vector3.new(0.24, 0.16, 0.16), K.BRASS, Enum.Material.Metal, K.CYL)
 		f.Anchored = true
 		ends[i] = f
 	end
@@ -2345,7 +2346,7 @@ local function applyArms(rig)
 		return
 	end
 
-	local gunCF = stanceRef(torso) * fitMove() * PIVOT * rig.orient * fitRot() * CFrame.new(0, 0, rig.r15 and -1.5 or -1.2)
+	local gunCF = stanceRef(torso) * fitMove() * K.PIVOT * rig.orient * fitRot() * CFrame.new(0, 0, rig.r15 and -1.5 or -1.2)
 	local rGrip = (gunCF * CFrame.new(0, -0.7, 0.6)).Position
 	local lGrip = (gunCF * CFrame.new(0, -0.5, -0.4)).Position
 	if rig.r15 then
@@ -2377,8 +2378,8 @@ local function updateRig(rig)
 			local B = (rig.root.CFrame * CFrame.new(0.45, -0.1, -0.25)).Position
 			ropeStep(rig.rope, A, B, rig.hoseLen, hoseCollide(torso.CFrame))
 			ropeRender(rig.rope, rig.segs, 0.1)
-			rig.ends[1].CFrame = CFrame.lookAt(A, rig.rope.pts[2]) * ZAX
-			rig.ends[2].CFrame = CFrame.lookAt(B, rig.rope.pts[rig.rope.n - 1]) * ZAX
+			rig.ends[1].CFrame = CFrame.lookAt(A, rig.rope.pts[2]) * K.ZAX
+			rig.ends[2].CFrame = CFrame.lookAt(B, rig.rope.pts[rig.rope.n - 1]) * K.ZAX
 		end
 
 		applyArms(rig)
@@ -2386,7 +2387,7 @@ local function updateRig(rig)
 	end
 
 	local tcf = stanceRef(torso)
-	local pivotCF = tcf * fitMove() * PIVOT
+	local pivotCF = tcf * fitMove() * K.PIVOT
 	updateOrient(rig, tcf, pivotCF.Position)
 	local gunCF = pivotCF * rig.orient * fitRot() * CFrame.new(0, 0, rig.r15 and -1.5 or -1.2)
 	rig.body.CFrame = gunCF
@@ -2407,8 +2408,8 @@ local function updateRig(rig)
 		local B = (rig.root.CFrame * CFrame.new(0.45, -0.1, -0.25)).Position
 		ropeStep(rig.rope, A, B, rig.hoseLen, hoseCollide(tcf))
 		ropeRender(rig.rope, rig.segs, 0.1)
-		rig.ends[1].CFrame = CFrame.lookAt(A, rig.rope.pts[2]) * ZAX
-		rig.ends[2].CFrame = CFrame.lookAt(B, rig.rope.pts[rig.rope.n - 1]) * ZAX
+		rig.ends[1].CFrame = CFrame.lookAt(A, rig.rope.pts[2]) * K.ZAX
+		rig.ends[2].CFrame = CFrame.lookAt(B, rig.rope.pts[rig.rope.n - 1]) * K.ZAX
 	end
 
 	applyArms(rig)
@@ -3536,9 +3537,9 @@ end
 
 ------------------------------------------------------------------ FUEL STATION
 local stations = {}
-local HOSE_MIN, HOSE_MAX = 2.2, 7.6
-local HOSE_POINTS = 23
-local NOZZLE_PORT = CFrame.new(1.5, 0.47, 0) * CFrame.Angles(0, math.rad(90), 0)   -- nozzle pose relative to the tank when plugged in
+K.HOSE_MIN, K.HOSE_MAX = 2.2, 7.6
+K.HOSE_POINTS = 23
+K.NOZZLE_PORT = CFrame.new(1.5, 0.47, 0) * CFrame.Angles(0, math.rad(90), 0)   -- nozzle pose relative to the tank when plugged in
 
 local function easeInOut(t) return t * t * (3 - 2 * t) end
 
@@ -3578,7 +3579,7 @@ end
 local function portNozzleCF()
 	local rig = activeRig
 	if rig and rig.model.Parent and rig.root.Parent then
-		return rig.root.CFrame * NOZZLE_PORT
+		return rig.root.CFrame * K.NOZZLE_PORT
 	end
 	local r = getRoot()
 	if r then
@@ -3613,7 +3614,7 @@ local function abortRefuel(st, why)
 	if st.state ~= "extending" and st.state ~= "fueling" then return end
 	st.state = "retracting"
 	stopFlow(st)
-	setDisplay(st, "DISCONNECTED", litresText(st), RED)
+	setDisplay(st, "DISCONNECTED", litresText(st), K.RED)
 	notify("Fuel station", why, 3)
 end
 
@@ -3644,7 +3645,7 @@ local function startRefuel(st)
 	st.added = 0
 	st.pending = 0
 	st.prompt.Enabled = false
-	setDisplay(st, "CONNECTING", "0.0 L", AMBER)
+	setDisplay(st, "CONNECTING", "0.0 L", K.AMBER)
 end
 
 local function stationHoseCollide(st)
@@ -3698,7 +3699,7 @@ local function stationStep(st, dt)
 			st.state = "fueling"
 			playSoundAt(st.nozzle, CFG.SOUNDS.CONNECT, { Volume = 1 })
 			st.flow = playSoundAt(st.nozzle, CFG.SOUNDS.FUEL_LOOP, { Looped = true, Volume = 0.8 })
-			setDisplay(st, "CLICK NOZZLE", litresText(st), AMBER)
+			setDisplay(st, "CLICK NOZZLE", litresText(st), K.AMBER)
 			notify("Fuel station", "Nozzle is in. Click the nozzle (or the PUMP button) again and again to fill the tank.", 5)
 		end
 	elseif st.state == "fueling" then
@@ -3756,8 +3757,8 @@ local function stationStep(st, dt)
 
 	local A = st.hoseStart
 	local B = (nzCF * CFrame.new(0, 0, 0.5)).Position
-	local len = HOSE_MIN + (HOSE_MAX - HOSE_MIN) * e
-	if (st.state == "extending" or st.state == "fueling") and (A - B).Magnitude > HOSE_MAX - 0.2 then
+	local len = K.HOSE_MIN + (K.HOSE_MAX - K.HOSE_MIN) * e
+	if (st.state == "extending" or st.state == "fueling") and (A - B).Magnitude > K.HOSE_MAX - 0.2 then
 		abortRefuel(st, "The hose ran out of slack. The nozzle popped out.")
 	end
 	ropeStep(st.rope, A, B, len, st.collide)
@@ -3884,7 +3885,7 @@ local function placeStation(position, faceTo)
 	-- hose outlet + nozzle holster on the right side
 	sp("HoseOutlet", Vector3.new(0.22, 0.34, 0.34), Color3.fromRGB(60, 60, 64), METAL, CFrame.new(0.97, 1.3, 0))
 	sp("HolsterBack", Vector3.new(0.12, 1.0, 0.5), Color3.fromRGB(34, 34, 38), METAL, CFrame.new(0.95, 2.4, 0))
-	sp("HolsterCup", Vector3.new(0.45, 0.34, 0.34), Color3.fromRGB(40, 40, 44), METAL, CFrame.new(1.2, 1.95, 0) * UPR, CYL)
+	sp("HolsterCup", Vector3.new(0.45, 0.34, 0.34), Color3.fromRGB(40, 40, 44), METAL, CFrame.new(1.2, 1.95, 0) * UPR, K.CYL)
 
 	-- status lamp
 	local lamp = sp("Lamp", Vector3.new(0.45, 0.45, 0.45), GREEN, Enum.Material.Neon, CFrame.new(0, 4.85, 0), Enum.PartType.Ball)
@@ -3896,7 +3897,7 @@ local function placeStation(position, faceTo)
 
 	-- canopy
 	for _, sx in ipairs({ -4.3, 4.3 }) do
-		sp("Column", Vector3.new(7.2, 0.55, 0.55), Color3.fromRGB(222, 222, 220), METAL, CFrame.new(sx, 3.6, 2.6) * UPR, CYL, true)
+		sp("Column", Vector3.new(7.2, 0.55, 0.55), Color3.fromRGB(222, 222, 220), METAL, CFrame.new(sx, 3.6, 2.6) * UPR, K.CYL, true)
 	end
 	sp("Roof", Vector3.new(10.8, 0.5, 8.2), Color3.fromRGB(228, 228, 226), METAL, CFrame.new(0, 7.45, 0.2), nil, true)
 	sp("TrimFront", Vector3.new(10.8, 0.3, 0.16), Color3.fromRGB(196, 42, 34), PLASTIC, CFrame.new(0, 7.38, -3.92))
@@ -3912,8 +3913,8 @@ local function placeStation(position, faceTo)
 
 	-- bollards and a jerry can
 	for _, sx in ipairs({ -2.0, 2.0 }) do
-		sp("Bollard", Vector3.new(2.2, 0.5, 0.5), Color3.fromRGB(232, 192, 38), PLASTIC, CFrame.new(sx, 1.55, -2.1) * UPR, CYL, true)
-		sp("BollardCap", Vector3.new(0.1, 0.52, 0.52), Color3.fromRGB(30, 30, 30), PLASTIC, CFrame.new(sx, 2.65, -2.1) * UPR, CYL)
+		sp("Bollard", Vector3.new(2.2, 0.5, 0.5), Color3.fromRGB(232, 192, 38), PLASTIC, CFrame.new(sx, 1.55, -2.1) * UPR, K.CYL, true)
+		sp("BollardCap", Vector3.new(0.1, 0.52, 0.52), Color3.fromRGB(30, 30, 30), PLASTIC, CFrame.new(sx, 2.65, -2.1) * UPR, K.CYL)
 	end
 	sp("JerryCan", Vector3.new(0.9, 1.2, 0.5), Color3.fromRGB(178, 30, 24), PLASTIC, CFrame.new(-1.4, 1.05, -0.2), nil, true)
 	sp("JerryCap", Vector3.new(0.3, 0.2, 0.3), Color3.fromRGB(236, 196, 40), PLASTIC, CFrame.new(-1.6, 1.75, -0.2))
@@ -3984,9 +3985,9 @@ local function placeStation(position, faceTo)
 	local nozGrip = nadd("NozGrip", Vector3.new(0.2, 0.5, 0.24), Color3.fromRGB(24, 24, 26), PLASTIC, CFrame.new(0, -0.2, 0.18))
 	local nozLever = nadd("NozLever", Vector3.new(0.06, 0.22, 0.08), Color3.fromRGB(170, 172, 176), METAL, CFrame.new(0, -0.08, -0.04))
 	local leverW = nozLever:FindFirstChildOfClass("Weld")
-	nadd("NozSpout", Vector3.new(0.55, 0.1, 0.1), Color3.fromRGB(150, 152, 156), METAL, CFrame.new(0, 0.08, -0.62) * ZAX, CYL)
-	nadd("NozCollar", Vector3.new(0.14, 0.2, 0.2), Color3.fromRGB(170, 132, 58), METAL, CFrame.new(0, 0.08, -0.4) * ZAX, CYL)
-	nadd("NozHoseEnd", Vector3.new(0.16, 0.18, 0.18), Color3.fromRGB(170, 132, 58), METAL, CFrame.new(0, 0, 0.46) * ZAX, CYL)
+	nadd("NozSpout", Vector3.new(0.55, 0.1, 0.1), Color3.fromRGB(150, 152, 156), METAL, CFrame.new(0, 0.08, -0.62) * K.ZAX, K.CYL)
+	nadd("NozCollar", Vector3.new(0.14, 0.2, 0.2), Color3.fromRGB(170, 132, 58), METAL, CFrame.new(0, 0.08, -0.4) * K.ZAX, K.CYL)
+	nadd("NozHoseEnd", Vector3.new(0.16, 0.18, 0.18), Color3.fromRGB(170, 132, 58), METAL, CFrame.new(0, 0, 0.46) * K.ZAX, K.CYL)
 
 	-- clicking the nozzle (or the PUMP button) is what actually pumps
 	local hl = Instance.new("Highlight")
@@ -4019,10 +4020,10 @@ local function placeStation(position, faceTo)
 		statusLbl = statusLbl, litreLbl = litreLbl, lamp = lamp, lampLight = lampLight,
 		state = "idle", ext = 0, added = 0, settle = 3, pending = 0, squeeze = 0,
 		hl = hl, leverW = leverW, leverBase = leverW.C0,
-		rope = newRope(HOSE_POINTS),
+		rope = newRope(K.HOSE_POINTS),
 	}
 	st.collide = stationHoseCollide(st)
-	st.segs = ropeMakeSegments(model, HOSE_POINTS - 1, 0.13, Color3.fromRGB(26, 26, 28), PLASTIC)
+	st.segs = ropeMakeSegments(model, K.HOSE_POINTS - 1, 0.13, Color3.fromRGB(26, 26, 28), PLASTIC)
 	ropeFill(st.rope, hoseStart, (restCF * CFrame.new(0, 0, 0.5)).Position)
 
 	prompt.Triggered:Connect(function() if not CFG.FT.stopped then startRefuel(st) end end)
@@ -4259,16 +4260,16 @@ do
 end
 
 ------------------------------------------------------------------ UI
-local BG = Color3.fromRGB(24, 24, 24)
+K.BG = Color3.fromRGB(24, 24, 24)
 local BAR = Color3.fromRGB(40, 40, 40)
-local LINE = Color3.fromRGB(78, 78, 78)
-local BTN = Color3.fromRGB(44, 44, 44)
-local BTN_HOVER = Color3.fromRGB(64, 64, 64)
-local TXT = Color3.fromRGB(214, 214, 214)
-local DIM = Color3.fromRGB(128, 128, 128)
-local ON = Color3.fromRGB(130, 205, 130)
-local OFF = Color3.fromRGB(205, 100, 90)
-local FONT = Enum.Font.Code
+K.LINE = Color3.fromRGB(78, 78, 78)
+K.BTN = Color3.fromRGB(44, 44, 44)
+K.BTN_HOVER = Color3.fromRGB(64, 64, 64)
+K.TXT = Color3.fromRGB(214, 214, 214)
+K.DIM = Color3.fromRGB(128, 128, 128)
+K.ON = Color3.fromRGB(130, 205, 130)
+K.OFF = Color3.fromRGB(205, 100, 90)
+K.FONT = Enum.Font.Code
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "FlamethrowerUI"
@@ -4313,8 +4314,8 @@ local function label(parent, text, color, align)
 	local l = Instance.new("TextLabel")
 	l.BackgroundTransparency = 1
 	l.Text = text
-	l.TextColor3 = color or TXT
-	l.Font = FONT
+	l.TextColor3 = color or K.TXT
+	l.Font = K.FONT
 	l.TextSize = 14
 	l.TextXAlignment = align or Enum.TextXAlignment.Left
 	l.Parent = parent
@@ -4323,17 +4324,17 @@ end
 
 local function flatButton(parent, text)
 	local b = Instance.new("TextButton")
-	b.BackgroundColor3 = BTN
+	b.BackgroundColor3 = K.BTN
 	b.BorderSizePixel = 1
-	b.BorderColor3 = LINE
+	b.BorderColor3 = K.LINE
 	b.AutoButtonColor = false
 	b.Text = text
-	b.TextColor3 = TXT
-	b.Font = FONT
+	b.TextColor3 = K.TXT
+	b.Font = K.FONT
 	b.TextSize = 14
 	b.Parent = parent
-	b.MouseEnter:Connect(function() b.BackgroundColor3 = BTN_HOVER end)
-	b.MouseLeave:Connect(function() b.BackgroundColor3 = BTN end)
+	b.MouseEnter:Connect(function() b.BackgroundColor3 = K.BTN_HOVER end)
+	b.MouseLeave:Connect(function() b.BackgroundColor3 = K.BTN end)
 	return b
 end
 
@@ -4341,16 +4342,16 @@ local function makeWindow(title, width, pos)
 	local w = Instance.new("Frame")
 	w.Position = pos
 	w.Size = UDim2.fromOffset(width, 100)
-	w.BackgroundColor3 = BG
+	w.BackgroundColor3 = K.BG
 	w.BorderSizePixel = 1
-	w.BorderColor3 = LINE
+	w.BorderColor3 = K.LINE
 	w.Parent = gui
 	local bar = Instance.new("Frame")
 	bar.Size = UDim2.new(1, 0, 0, 22)
 	bar.BackgroundColor3 = BAR
 	bar.BorderSizePixel = 0
 	bar.Parent = w
-	local t = label(bar, title, TXT)
+	local t = label(bar, title, K.TXT)
 	t.Size = UDim2.new(1, -30, 1, 0)
 	t.Position = UDim2.fromOffset(7, 0)
 	local body = Instance.new("ScrollingFrame")
@@ -4389,7 +4390,7 @@ minBtn.Position = UDim2.new(1, -3, 0.5, 0)
 minBtn.Size = UDim2.fromOffset(20, 16)
 
 local function header(text)
-	local h = label(body, text, DIM)
+	local h = label(body, text, K.DIM)
 	h.LayoutOrder = nextOrder()
 	h.Size = UDim2.new(1, 0, 0, 16)
 	return h
@@ -4405,16 +4406,16 @@ local function toggle(text, get, set)
 	local b = flatButton(body, "")
 	b.LayoutOrder = nextOrder()
 	b.Size = UDim2.new(1, 0, 0, 24)
-	local name = label(b, text, TXT)
+	local name = label(b, text, K.TXT)
 	name.Size = UDim2.new(1, -50, 1, 0)
 	name.Position = UDim2.fromOffset(7, 0)
-	local state = label(b, "", TXT, Enum.TextXAlignment.Right)
+	local state = label(b, "", K.TXT, Enum.TextXAlignment.Right)
 	state.Size = UDim2.new(0, 44, 1, 0)
 	state.Position = UDim2.new(1, -50, 0, 0)
 	local function refresh()
 		local on = get()
 		state.Text = on and "[on]" or "[off]"
-		state.TextColor3 = on and ON or OFF
+		state.TextColor3 = on and K.ON or K.OFF
 	end
 	b.MouseButton1Click:Connect(function()
 		set(not get())
@@ -4444,7 +4445,7 @@ if not CFG.LITE then
 	toggle("kneel when begging", function() return CFG.BEG.KNEEL == true end, function(v) CFG.BEG.KNEEL = v end)
 	toggle("dark movie look", function() return CFG.BEG.CINEMATIC ~= false end, function(v) CFG.BEG.CINEMATIC = v end)
 end
-local stats = label(body, "", DIM)
+local stats = label(body, "", K.DIM)
 stats.LayoutOrder = nextOrder()
 stats.Size = UDim2.new(1, 0, 0, 30)
 stats.TextYAlignment = Enum.TextYAlignment.Top
@@ -4477,7 +4478,7 @@ local MIN_W, MIN_H, MAX_W, MAX_H = 170, 110, 520, 640
 local SQUARE = 36
 local titleLbl = bar:FindFirstChildOfClass("TextLabel")
 
-local squareLbl = label(bar, "FT", TXT, Enum.TextXAlignment.Center)
+local squareLbl = label(bar, "FT", K.TXT, Enum.TextXAlignment.Center)
 squareLbl.Size = UDim2.fromScale(1, 1)
 squareLbl.Visible = false
 
@@ -4505,7 +4506,7 @@ for i, len in ipairs({ 14, 9, 4 }) do
 	line.Size = UDim2.fromOffset(len, 2)
 	line.Position = UDim2.new(1, -9 + (i - 1) * 3, 1, -9 + (i - 1) * 3)
 	line.Rotation = -45
-	line.BackgroundColor3 = DIM
+	line.BackgroundColor3 = K.DIM
 	line.BorderSizePixel = 0
 	line.ZIndex = 5
 	line.Parent = win
@@ -4599,7 +4600,7 @@ closeBtn.Position = UDim2.new(1, -3, 0.5, 0)
 closeBtn.Size = UDim2.fromOffset(20, 16)
 closeBtn.MouseButton1Click:Connect(function() popup.Visible = false end)
 
-local pl = label(pbody, "flamethrower, made by DuaKNo & Monkey", TXT)
+local pl = label(pbody, "flamethrower, made by DuaKNo & Monkey", K.TXT)
 pl.LayoutOrder = 1
 pl.Size = UDim2.new(1, 0, 0, 18)
 local invite = Instance.new("TextBox")
@@ -4607,9 +4608,9 @@ invite.LayoutOrder = 2
 invite.Size = UDim2.new(1, 0, 0, 24)
 invite.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
 invite.BorderSizePixel = 1
-invite.BorderColor3 = LINE
-invite.TextColor3 = TXT
-invite.Font = FONT
+invite.BorderColor3 = K.LINE
+invite.TextColor3 = K.TXT
+invite.Font = K.FONT
 invite.TextSize = 13
 invite.Text = CFG.DISCORD
 invite.ClearTextOnFocus = false
